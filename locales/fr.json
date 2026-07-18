@@ -1,0 +1,87 @@
+{
+  "meta": {
+    "title": "Generic Operator — Moteur d'opérateur Kubernetes générique",
+    "description": "Un moteur d'opérateur Kubernetes générique piloté par templates Jinja2, avec Secure Namespace Operator comme implémentation de référence."
+  },
+  "nav": {
+    "problems": "Problématiques",
+    "solutions": "Solutions",
+    "features": "Fonctionnalités",
+    "install": "Installation",
+    "roadmap": "Roadmap"
+  },
+  "hero": {
+    "title": "Generic Operator",
+    "tagline": "Un moteur d'opérateur Kubernetes générique, piloté par templates Jinja2 — avec Secure Namespace Operator comme implémentation de référence.",
+    "cta_install": "Installer",
+    "cta_releases": "Voir les releases",
+    "cta_source": "Code source"
+  },
+  "problems": {
+    "heading": "Le problème",
+    "intro": "Construire un opérateur Kubernetes pour du provisioning à la demande — namespaces, quotas, isolation réseau, ingress, egress — demande une base solide (boucle de réconciliation, rendu de templates, suivi de révisions, RBAC) avant même d'écrire la première ligne de logique métier.",
+    "p1_title": "Code dupliqué à chaque nouveau besoin",
+    "p1_text": "La boucle kopf, le rendu de templates, l'application générique de ressources et le suivi de révisions se réécrivent identiques d'un opérateur à l'autre.",
+    "p2_title": "Webhooks fragiles",
+    "p2_text": "Un webhook mutant/validant maison implique certificats TLS, cert-manager, disponibilité réseau vers l'API server — de la charge opérationnelle pour une logique souvent simple.",
+    "p3_title": "Distribution artisanale",
+    "p3_text": "Sans registre OCI natif, publier et versionner un chart Helm pour une équipe plateforme reste manuel et peu reproductible.",
+    "audience": "Public visé : équipes plateforme / SRE qui opèrent du multi-tenant Kubernetes et doivent exposer du self-service namespace de façon sécurisée."
+  },
+  "solutions": {
+    "heading": "L'approche",
+    "before_title": "Avant",
+    "before_1": "Logique métier et mécanique d'opérateur mélangées dans le même code",
+    "before_2": "Un webhook Flask + cert-manager pour la moindre mutation/validation",
+    "before_3": "CRD, group, version codés en dur partout dans le code Python",
+    "after_title": "Avec Generic Operator",
+    "after_1a": "Moteur générique (",
+    "after_1b": ") séparé de l'implémentation déclarative (",
+    "after_1c": ")",
+    "after_2a": "Kyverno ",
+    "after_2b": "pour l'admission — zéro webhook à opérer",
+    "after_3": "pilote le CRD ciblé — group/version/kind/plural jamais en dur",
+    "ref_title": "Secure Namespace Operator — l'implémentation de référence livrée",
+    "ref_text": "Provisioning de namespaces sécurisés avec isolation réseau Cilium, quotas de ressources, ingress multi-contrôleur (NGINX/HAProxy/Traefik) et gateway d'egress par VIP avec annonce L2 — le tout généré depuis des templates Jinja2, sans code Python spécifique par namespace."
+  },
+  "features": {
+    "heading": "Fonctionnalités",
+    "f1_title": "Moteur CRD-agnostique",
+    "f1_text": "kopf + rendu Jinja2 à délimiteurs personnalisés + application générique de ressources via DynamicClient.",
+    "f2_title": "Isolation réseau Cilium",
+    "f2_text": "NetworkPolicies générées automatiquement, avec règles d'accès externe configurables (CIDR, FQDN, services, namespaces).",
+    "f3_title": "Ingress multi-contrôleur",
+    "f3_text": "NGINX, HAProxy ou Traefik au choix, un contrôleur dédié par namespace provisionné.",
+    "f4_title": "Egress VIP Gateway",
+    "f4_text": "Placement automatique de VIP avec annonce L2 et politiques Cilium — désormais unifié dans le moteur générique.",
+    "badge_new": "Nouveau v0.0.2",
+    "f5_title": "Admission via Kyverno",
+    "f5_text": "Auto-génération du nom, validation des champs requis — remplace un webhook mutant/validant maison.",
+    "f6_title": "Historique de révisions",
+    "f6_text": "Chaque changement de spec est tracé — révision incrémentée, diff et audit trail conservés en ConfigMap.",
+    "f7_title": "Distribution OCI native",
+    "f7_text": "Publication automatique sur ghcr.io via GitHub Actions à chaque tag — installation OCI directe."
+  },
+  "install": {
+    "heading": "Installation",
+    "oci_title": "Depuis ghcr.io (recommandé)",
+    "source_title": "Depuis les sources",
+    "config_title": "Configurer le CRD ciblé",
+    "config_text_a": "Le moteur ne connaît aucun CRD en dur — tout passe par ",
+    "config_text_b": " :",
+    "more_a": "Prérequis, désinstallation et référence complète des champs du CRD :",
+    "more_b": "· construire sa propre implémentation :"
+  },
+  "roadmap": {
+    "heading": "Roadmap",
+    "shipped_title": "Livré ✓",
+    "v002": "Contrôleur VIP unifié dans le moteur générique, CI GitHub Actions, publication ghcr.io vérifiée de bout en bout",
+    "v001": "Première publication : moteur générique + implémentation de référence secure-namespace",
+    "next_title": "À venir",
+    "empty_a": "Pas de roadmap formelle publiée pour le moment — suivez les",
+    "changelog_link_prefix": "Historique complet :"
+  },
+  "footer": {
+    "license": "Licence MIT"
+  }
+}

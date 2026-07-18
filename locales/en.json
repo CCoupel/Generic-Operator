@@ -1,0 +1,87 @@
+{
+  "meta": {
+    "title": "Generic Operator — Generic Kubernetes Operator Engine",
+    "description": "A generic, Jinja2-template-driven Kubernetes operator engine, with Secure Namespace Operator as reference implementation."
+  },
+  "nav": {
+    "problems": "Problems",
+    "solutions": "Solutions",
+    "features": "Features",
+    "install": "Install",
+    "roadmap": "Roadmap"
+  },
+  "hero": {
+    "title": "Generic Operator",
+    "tagline": "A generic, Jinja2-template-driven Kubernetes operator engine — with Secure Namespace Operator as reference implementation.",
+    "cta_install": "Install",
+    "cta_releases": "View releases",
+    "cta_source": "Source code"
+  },
+  "problems": {
+    "heading": "The problem",
+    "intro": "Building a Kubernetes operator for on-demand provisioning — namespaces, quotas, network isolation, ingress, egress — requires a solid foundation (reconciliation loop, template rendering, revision tracking, RBAC) before writing a single line of business logic.",
+    "p1_title": "Duplicated code for every new need",
+    "p1_text": "The kopf loop, template rendering, generic resource application, and revision tracking get rewritten identically from one operator to the next.",
+    "p2_title": "Fragile webhooks",
+    "p2_text": "A homegrown mutating/validating webhook means TLS certificates, cert-manager, and network availability to the API server — operational overhead for what's often simple logic.",
+    "p3_title": "Ad hoc distribution",
+    "p3_text": "Without a native OCI registry, publishing and versioning a Helm chart for a platform team stays manual and hard to reproduce.",
+    "audience": "Target audience: platform / SRE teams operating multi-tenant Kubernetes who need to expose secure, self-service namespace provisioning."
+  },
+  "solutions": {
+    "heading": "The approach",
+    "before_title": "Before",
+    "before_1": "Business logic and operator mechanics mixed together in the same code",
+    "before_2": "A Flask webhook + cert-manager for every mutation/validation, however small",
+    "before_3": "CRD group/version hardcoded throughout the Python code",
+    "after_title": "With Generic Operator",
+    "after_1a": "Generic engine (",
+    "after_1b": ") separated from the declarative implementation (",
+    "after_1c": ")",
+    "after_2a": "Kyverno ",
+    "after_2b": "for admission — zero webhook to operate",
+    "after_3": "drives the targeted CRD — group/version/kind/plural never hardcoded",
+    "ref_title": "Secure Namespace Operator — the bundled reference implementation",
+    "ref_text": "Secure namespace provisioning with Cilium network isolation, resource quotas, multi-controller ingress (NGINX/HAProxy/Traefik), and a VIP-based egress gateway with L2 announcement — all generated from Jinja2 templates, with no per-namespace Python code."
+  },
+  "features": {
+    "heading": "Features",
+    "f1_title": "CRD-agnostic engine",
+    "f1_text": "kopf + Jinja2 rendering with custom delimiters + generic resource application via the DynamicClient.",
+    "f2_title": "Cilium network isolation",
+    "f2_text": "NetworkPolicies generated automatically, with configurable external-access rules (CIDR, FQDN, services, namespaces).",
+    "f3_title": "Multi-controller ingress",
+    "f3_text": "NGINX, HAProxy, or Traefik — a dedicated controller per provisioned namespace.",
+    "f4_title": "Egress VIP gateway",
+    "f4_text": "Automatic VIP placement with L2 announcement and Cilium policies — now unified into the generic engine.",
+    "badge_new": "New in v0.0.2",
+    "f5_title": "Kyverno-based admission",
+    "f5_text": "Auto-generates the name, validates required fields — replaces a homegrown mutating/validating webhook.",
+    "f6_title": "Revision history",
+    "f6_text": "Every spec change is tracked — revision incremented, diff and audit trail kept in a ConfigMap.",
+    "f7_title": "Native OCI distribution",
+    "f7_text": "Automatically published to ghcr.io via GitHub Actions on every tag — direct OCI install."
+  },
+  "install": {
+    "heading": "Installation",
+    "oci_title": "From ghcr.io (recommended)",
+    "source_title": "From source",
+    "config_title": "Configure the target CRD",
+    "config_text_a": "The engine has no CRD hardcoded — everything is driven by ",
+    "config_text_b": ":",
+    "more_a": "Prerequisites, uninstall steps, and full CRD field reference:",
+    "more_b": "· build your own implementation:"
+  },
+  "roadmap": {
+    "heading": "Roadmap",
+    "shipped_title": "Shipped ✓",
+    "v002": "VIP controller unified into the generic engine, GitHub Actions CI, ghcr.io publishing verified end to end",
+    "v001": "First release: generic engine + secure-namespace reference implementation",
+    "next_title": "Up next",
+    "empty_a": "No formal roadmap published yet — follow the",
+    "changelog_link_prefix": "Full history:"
+  },
+  "footer": {
+    "license": "MIT License"
+  }
+}

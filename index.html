@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title data-i18n="meta.title">Generic Operator</title>
+<meta name="description" data-i18n-attr="content:meta.description" content="A generic Kubernetes operator engine with a full reference implementation.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="#hero">
+      <span class="brand-icon">⚙️</span>
+      <span class="brand-name">Generic Operator</span>
+    </a>
+    <nav class="main-nav">
+      <a href="#problems" data-i18n="nav.problems">Problématiques</a>
+      <a href="#solutions" data-i18n="nav.solutions">Solutions</a>
+      <a href="#features" data-i18n="nav.features">Fonctionnalités</a>
+      <a href="#install" data-i18n="nav.install">Installation</a>
+      <a href="#roadmap" data-i18n="nav.roadmap">Roadmap</a>
+    </nav>
+    <div class="lang-switcher" role="group" aria-label="Language switcher">
+      <button class="lang-btn active" data-lang="fr">FR</button>
+      <span aria-hidden="true">|</span>
+      <button class="lang-btn" data-lang="en">EN</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <section id="hero" class="hero">
+    <div class="wrap hero-inner">
+      <span class="version-badge" id="version-badge">v0.0.2</span>
+      <h1 data-i18n="hero.title">Generic Operator</h1>
+      <p class="hero-tagline" data-i18n="hero.tagline">
+        Un moteur d'opérateur Kubernetes générique, piloté par templates Jinja2 — avec
+        Secure Namespace Operator comme implémentation de référence.
+      </p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#install" data-i18n="hero.cta_install">Installer</a>
+        <a class="btn btn-secondary" href="https://github.com/CCoupel/Generic-Operator/releases" target="_blank" rel="noopener" data-i18n="hero.cta_releases">Voir les releases</a>
+        <a class="btn btn-ghost" href="https://github.com/CCoupel/Generic-Operator" target="_blank" rel="noopener" data-i18n="hero.cta_source">Code source</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="problems" class="section section-alt">
+    <div class="wrap">
+      <h2 data-i18n="problems.heading">Le problème</h2>
+      <p class="section-intro" data-i18n="problems.intro">
+        Construire un opérateur Kubernetes pour du provisioning à la demande — namespaces, quotas,
+        isolation réseau, ingress, egress — demande une base solide (boucle de réconciliation,
+        rendu de templates, suivi de révisions, RBAC) avant même d'écrire la première ligne de
+        logique métier.
+      </p>
+      <div class="card-grid">
+        <div class="card">
+          <span class="card-icon">🔁</span>
+          <h3 data-i18n="problems.p1_title">Code dupliqué à chaque nouveau besoin</h3>
+          <p data-i18n="problems.p1_text">La boucle kopf, le rendu de templates, l'application générique de ressources et le suivi de révisions se réécrivent identiques d'un opérateur à l'autre.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">🕸️</span>
+          <h3 data-i18n="problems.p2_title">Webhooks fragiles</h3>
+          <p data-i18n="problems.p2_text">Un webhook mutant/validant maison implique certificats TLS, cert-manager, disponibilité réseau vers l'API server — de la charge opérationnelle pour une logique souvent simple.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">📦</span>
+          <h3 data-i18n="problems.p3_title">Distribution artisanale</h3>
+          <p data-i18n="problems.p3_text">Sans registre OCI natif, publier et versionner un chart Helm pour une équipe plateforme reste manuel et peu reproductible.</p>
+        </div>
+      </div>
+      <p class="section-audience" data-i18n="problems.audience">
+        Public visé : équipes plateforme / SRE qui opèrent du multi-tenant Kubernetes et doivent
+        exposer du self-service namespace de façon sécurisée.
+      </p>
+    </div>
+  </section>
+
+  <section id="solutions" class="section">
+    <div class="wrap">
+      <h2 data-i18n="solutions.heading">L'approche</h2>
+      <div class="before-after">
+        <div class="ba-col ba-before">
+          <h3 data-i18n="solutions.before_title">Avant</h3>
+          <ul>
+            <li data-i18n="solutions.before_1">Logique métier et mécanique d'opérateur mélangées dans le même code</li>
+            <li data-i18n="solutions.before_2">Un webhook Flask + cert-manager pour la moindre mutation/validation</li>
+            <li data-i18n="solutions.before_3">CRD, group, version codés en dur partout dans le code Python</li>
+          </ul>
+        </div>
+        <div class="ba-arrow" aria-hidden="true">→</div>
+        <div class="ba-col ba-after">
+          <h3 data-i18n="solutions.after_title">Avec Generic Operator</h3>
+          <ul>
+            <li><span data-i18n="solutions.after_1a">Moteur générique (</span><code>templates/core/</code><span data-i18n="solutions.after_1b">) séparé de l'implémentation déclarative (</span><code>templates/implementations/&lt;nom&gt;/</code><span data-i18n="solutions.after_1c">)</span></li>
+            <li><span data-i18n="solutions.after_2a">Kyverno </span><code>ClusterPolicy</code><span data-i18n="solutions.after_2b"> pour l'admission — zéro webhook à opérer</span></li>
+            <li><code>values.yaml::crd</code><span data-i18n="solutions.after_3">pilote le CRD ciblé — group/version/kind/plural jamais en dur</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="reference-callout">
+        <h3 data-i18n="solutions.ref_title">Secure Namespace Operator — l'implémentation de référence livrée</h3>
+        <p data-i18n="solutions.ref_text">
+          Provisioning de namespaces sécurisés avec isolation réseau Cilium, quotas de ressources,
+          ingress multi-contrôleur (NGINX/HAProxy/Traefik) et gateway d'egress par VIP avec
+          annonce L2 — le tout généré depuis des templates Jinja2, sans code Python spécifique
+          par namespace.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" class="section section-alt">
+    <div class="wrap">
+      <h2 data-i18n="features.heading">Fonctionnalités</h2>
+      <div class="card-grid">
+        <div class="card">
+          <span class="card-icon">🧩</span>
+          <h3 data-i18n="features.f1_title">Moteur CRD-agnostique</h3>
+          <p data-i18n="features.f1_text">kopf + rendu Jinja2 à délimiteurs personnalisés + application générique de ressources via DynamicClient.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">🛡️</span>
+          <h3 data-i18n="features.f2_title">Isolation réseau Cilium</h3>
+          <p data-i18n="features.f2_text">NetworkPolicies générées automatiquement, avec règles d'accès externe configurables (CIDR, FQDN, services, namespaces).</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">🌐</span>
+          <h3 data-i18n="features.f3_title">Ingress multi-contrôleur</h3>
+          <p data-i18n="features.f3_text">NGINX, HAProxy ou Traefik au choix, un contrôleur dédié par namespace provisionné.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">🚪</span>
+          <h3 data-i18n="features.f4_title">Egress VIP Gateway</h3>
+          <p data-i18n="features.f4_text">Placement automatique de VIP avec annonce L2 et politiques Cilium — désormais unifié dans le moteur générique.</p>
+          <span class="badge-new" data-i18n="features.badge_new">Nouveau v0.0.2</span>
+        </div>
+        <div class="card">
+          <span class="card-icon">✅</span>
+          <h3 data-i18n="features.f5_title">Admission via Kyverno</h3>
+          <p data-i18n="features.f5_text">Auto-génération du nom, validation des champs requis — remplace un webhook mutant/validant maison.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">📜</span>
+          <h3 data-i18n="features.f6_title">Historique de révisions</h3>
+          <p data-i18n="features.f6_text">Chaque changement de spec est tracé — révision incrémentée, diff et audit trail conservés en ConfigMap.</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">📦</span>
+          <h3 data-i18n="features.f7_title">Distribution OCI native</h3>
+          <p data-i18n="features.f7_text">Publication automatique sur ghcr.io via GitHub Actions à chaque tag — installation OCI directe.</p>
+          <span class="badge-new" data-i18n="features.badge_new">Nouveau v0.0.2</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" class="section">
+    <div class="wrap">
+      <h2 data-i18n="install.heading">Installation</h2>
+
+      <h3 data-i18n="install.oci_title">Depuis ghcr.io (recommandé)</h3>
+      <pre><code>helm install secure-namespace-operator \
+  oci://ghcr.io/ccoupel/charts/secure-namespace-operator \
+  --version 0.0.2 \
+  --namespace namespace-operator \
+  --create-namespace \
+  -f values.yaml</code></pre>
+
+      <h3 data-i18n="install.source_title">Depuis les sources</h3>
+      <pre><code>git clone https://github.com/CCoupel/Generic-Operator.git
+cd Generic-Operator
+helm install secure-namespace-operator ./CHARTS \
+  --namespace namespace-operator \
+  --create-namespace \
+  -f CHARTS/values.yaml</code></pre>
+
+      <h3 data-i18n="install.config_title">Configurer le CRD ciblé</h3>
+      <p><span data-i18n="install.config_text_a">Le moteur ne connaît aucun CRD en dur — tout passe par </span><code>values.yaml::crd</code><span data-i18n="install.config_text_b"> :</span></p>
+      <pre><code>crd:
+  group: secure-ns.example.com
+  version: v1alpha1
+  kind: SecureNamespace
+  plural: securenamespaces</code></pre>
+
+      <p class="install-more">
+        <span data-i18n="install.more_a">Prérequis, désinstallation et référence complète des champs du CRD :</span>
+        <a href="https://github.com/CCoupel/Generic-Operator/blob/main/CHARTS/README.md" target="_blank" rel="noopener">CHARTS/README.md</a>
+        <span data-i18n="install.more_b">· construire sa propre implémentation :</span>
+        <a href="https://github.com/CCoupel/Generic-Operator/blob/main/documentation/HOWTO-NEW-IMPLEMENTATION.md" target="_blank" rel="noopener">HOWTO-NEW-IMPLEMENTATION.md</a>
+      </p>
+    </div>
+  </section>
+
+  <section id="roadmap" class="section section-alt">
+    <div class="wrap">
+      <h2 data-i18n="roadmap.heading">Roadmap</h2>
+      <div class="roadmap-cols">
+        <div class="roadmap-col">
+          <h3 data-i18n="roadmap.shipped_title">Livré ✓</h3>
+          <ul class="roadmap-list">
+            <li><strong>v0.0.2</strong> — <span data-i18n="roadmap.v002">Contrôleur VIP unifié dans le moteur générique, CI GitHub Actions, publication ghcr.io vérifiée de bout en bout</span></li>
+            <li><strong>v0.0.1</strong> — <span data-i18n="roadmap.v001">Première publication : moteur générique + implémentation de référence secure-namespace</span></li>
+          </ul>
+        </div>
+        <div class="roadmap-col">
+          <h3 data-i18n="roadmap.next_title">À venir</h3>
+          <p class="roadmap-empty">
+            <span data-i18n="roadmap.empty_a">Pas de roadmap formelle publiée pour le moment — suivez les</span>
+            <a href="https://github.com/CCoupel/Generic-Operator/issues" target="_blank" rel="noopener">issues GitHub</a>.
+          </p>
+        </div>
+      </div>
+      <p class="changelog-link">
+        <span data-i18n="roadmap.changelog_link_prefix">Historique complet :</span>
+        <a href="https://github.com/CCoupel/Generic-Operator/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a>
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <span data-i18n="footer.license">MIT License</span>
+    <a href="https://github.com/CCoupel/Generic-Operator" target="_blank" rel="noopener">github.com/CCoupel/Generic-Operator</a>
+  </div>
+</footer>
+
+<script src="assets/lang.js"></script>
+</body>
+</html>
