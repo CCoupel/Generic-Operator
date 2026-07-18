@@ -48,7 +48,9 @@
     "templatecentric_title": "Template-centric : le Python n'est qu'un orchestrateur",
     "templatecentric_text": "Toute la logique métier vit dans les templates Jinja2, pas dans le code. Un changement de comportement passe le plus souvent par l'édition d'un template, jamais par une modification du moteur.",
     "order_title": "Une liste explicite de templates à traiter",
-    "order_text": "L'ordre d'exécution est déclaratif — le Namespace avant le NetworkPolicy, par exemple — et chaque entrée pointe vers un ConfigMap et une clé précis."
+    "order_text": "L'ordre d'exécution est déclaratif — le Namespace avant le NetworkPolicy, par exemple — et chaque entrée pointe vers un ConfigMap et une clé précis.",
+    "controller_title": "Opérateur + contrôleurs : le même moteur, en continu",
+    "controller_text": "L'opérateur peut spawner un contrôleur dédié par instance de CRD — un processus séparé qui rejoue exactement le même pipeline (étapes 3 à 6 ci-dessus) en continu, pour surveiller un état externe plutôt qu'appliquer un template une seule fois. Ce mécanisme fait partie du moteur générique, pas de l'implémentation."
   },
   "reference": {
     "eyebrow": "IMPLÉMENTATION DE RÉFÉRENCE",
@@ -62,11 +64,15 @@
     "w3_title": "Ingress multi-contrôleur",
     "w3_text": "NGINX, HAProxy ou Traefik au choix, un contrôleur dédié par namespace.",
     "w4_title": "Egress VIP Gateway",
-    "w4_text": "Placement automatique de VIP avec annonce L2 et politiques Cilium.",
+    "w4_text": "Placement automatique de VIP avec annonce L2 et politiques Cilium — porté par un contrôleur dédié, spawné par l'opérateur, une instance par namespace.",
     "how_title": "Comment c'est construit",
     "how_text_a": "Rien de tout ça n'est dans le moteur. ",
     "how_text_b": " est un dossier purement déclaratif branché sur ",
     "how_text_c": " :",
+    "controller_note_a": "Le code Python du contrôleur VIP appelé par ces templates vit dans le moteur (",
+    "controller_note_b": "), pas ici — voir ",
+    "controller_note_c": ".",
+    "controller_note_link": "« Opérateur + contrôleurs » ci-dessus",
     "install_title": "Installation",
     "oci_title": "Depuis ghcr.io (recommandé)",
     "source_title": "Depuis les sources",

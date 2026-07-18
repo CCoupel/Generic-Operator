@@ -168,6 +168,14 @@ _action: delete
   - templates-core/resource-quota.yaml
   - templates-network/network-policy.yaml</code></pre>
         </div>
+        <div class="concept-card">
+          <h3 data-i18n="concept.controller_title">Opérateur + contrôleurs : le même moteur, en continu</h3>
+          <p data-i18n="concept.controller_text">L'opérateur peut spawner un contrôleur dédié par instance de CRD — un processus séparé qui rejoue exactement le même pipeline (étapes 3 à 6 ci-dessus) en continu, pour surveiller un état externe plutôt qu'appliquer un template une seule fois. Ce mécanisme fait partie du moteur générique, pas de l'implémentation.</p>
+          <pre><code>templates/core/CODE/
+├── 3_operator.yml        # boucle principale
+└── 2_VIP-controller.yml  # contrôleur dédié,
+                           # même pipeline render/apply</code></pre>
+        </div>
       </div>
     </div>
   </section>
@@ -201,7 +209,7 @@ _action: delete
         <div class="card">
           <span class="card-icon">🚪</span>
           <h4 data-i18n="reference.w4_title">Egress VIP Gateway</h4>
-          <p data-i18n="reference.w4_text">Placement automatique de VIP avec annonce L2 et politiques Cilium.</p>
+          <p data-i18n="reference.w4_text">Placement automatique de VIP avec annonce L2 et politiques Cilium — porté par un contrôleur dédié, spawné par l'opérateur, une instance par namespace.</p>
         </div>
       </div>
 
@@ -212,7 +220,10 @@ _action: delete
 ├── RBAC/                   # permissions pour les ressources gérées
 ├── KYVERNO_rules/          # ClusterPolicy : auto-naming + validation
 │                           # (remplace un ancien webhook mutant/validant)
-└── TEMPLATES/              # les templates Jinja2 traités par le moteur</code></pre>
+└── TEMPLATES/              # templates Jinja2 (namespace, quotas, network,
+                             # ingress, RBAC, + CONTROLER/TEMPLATES pour
+                             # le contrôleur VIP)</code></pre>
+      <p><span data-i18n="reference.controller_note_a">Le code Python du contrôleur VIP appelé par ces templates vit dans le moteur (</span><code>core/CODE/2_VIP-controller.yml</code><span data-i18n="reference.controller_note_b">), pas ici — voir </span><a href="#concept" data-i18n="reference.controller_note_link">« Opérateur + contrôleurs » ci-dessus</a><span data-i18n="reference.controller_note_c">.</span></p>
 
       <h3 data-i18n="reference.install_title">Installation</h3>
 

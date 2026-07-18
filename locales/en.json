@@ -48,7 +48,9 @@
     "templatecentric_title": "Template-centric: Python is just an orchestrator",
     "templatecentric_text": "All business logic lives in the Jinja2 templates, not the code. A behavior change is usually a template edit, never an engine change.",
     "order_title": "An explicit list of templates to process",
-    "order_text": "Execution order is declarative — the Namespace before the NetworkPolicy, for instance — and each entry points to a specific ConfigMap and key."
+    "order_text": "Execution order is declarative — the Namespace before the NetworkPolicy, for instance — and each entry points to a specific ConfigMap and key.",
+    "controller_title": "Operator + controllers: same engine, continuous mode",
+    "controller_text": "The operator can spawn a dedicated controller per CRD instance — a separate process that replays the exact same pipeline (steps 3 to 6 above) continuously, to watch external state rather than apply a template once. This mechanism is part of the generic engine, not the implementation."
   },
   "reference": {
     "eyebrow": "REFERENCE IMPLEMENTATION",
@@ -62,11 +64,15 @@
     "w3_title": "Multi-controller ingress",
     "w3_text": "NGINX, HAProxy, or Traefik — a dedicated controller per namespace.",
     "w4_title": "Egress VIP gateway",
-    "w4_text": "Automatic VIP placement with L2 announcement and Cilium policies.",
+    "w4_text": "Automatic VIP placement with L2 announcement and Cilium policies — powered by a dedicated controller, spawned by the operator, one per namespace.",
     "how_title": "How it's built",
     "how_text_a": "None of this lives in the engine. ",
     "how_text_b": " is a purely declarative directory plugged into ",
     "how_text_c": ":",
+    "controller_note_a": "The VIP controller's Python code, called by these templates, lives in the engine (",
+    "controller_note_b": "), not here — see ",
+    "controller_note_c": ".",
+    "controller_note_link": "“Operator + controllers” above",
     "install_title": "Installation",
     "oci_title": "From ghcr.io (recommended)",
     "source_title": "From source",
