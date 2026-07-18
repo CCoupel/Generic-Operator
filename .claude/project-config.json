@@ -16,7 +16,7 @@
     "database": null
   },
   "infrastructure": {
-    "cicd": "gitlab-ci",
+    "cicd": "github-actions",
     "deploy": "helm-kubernetes"
   },
   "testing": {

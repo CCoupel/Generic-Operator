@@ -17,7 +17,7 @@
 | Kyverno | `CHARTS/templates/implementations/secure-namespace/KYVERNO_rules/*.yaml` — `ClusterPolicy` Validate/Mutate pour Ingress et SecureNamespace |
 | Templates embarqués (Jinja2) | `CHARTS/templates/implementations/secure-namespace/TEMPLATES/*.yml`, `CHARTS/templates/implementations/secure-namespace/CONTROLER/TEMPLATES/*.yml` |
 | Deployment du moteur (ne pas toucher — `dev-backend`/partagé) | `CHARTS/templates/core/10_deployment.yml` — c'est lui qui injecte `CRD_GROUP`/`CRD_VERSION`/`CRD_PLURAL` depuis `values.yaml::crd` |
-| CI/CD | `.gitlab-ci.yml` (GitLab CI — pas GitHub Actions malgré le template générique) |
+| CI/CD | `.github/workflows/release.yml` (GitHub Actions) |
 | Exemples (CR à `kubectl apply`) | `CHARTS/examples/*.yml` — ne pas confondre avec `templates/implementations/` (ça, c'est le code de l'implémentation, pas des instances) |
 
 ## Deux couches de templating — ne jamais les confondre
@@ -77,20 +77,19 @@ avec `dev-backend`.
   produire des `ClusterPolicy` identiques à avant modif quand `values.crd.*` garde ses valeurs par
   défaut (sinon l'échappement Kyverno a probablement été cassé)
 
-## CI/CD (`.gitlab-ci.yml`)
+## CI/CD (`.github/workflows/release.yml`)
 
-Pipeline GitLab CI à 3 stages :
+GitHub Actions (pas GitLab CI — le repo vit sur GitHub, `.gitlab-ci.yml` a été retiré car il n'avait
+aucun effet ici sans mirroir GitLab). Deux jobs :
 
-1. `validate` → `helm lint ${CHART_PATH}`
-2. `package` (sur tag uniquement) → bump `Chart.yaml` depuis `CI_COMMIT_TAG`, `helm package`
-3. `release` (sur tag uniquement) → `publish-oci-ghcr` : `helm push` du `.tgz` packagé vers
-   `oci://ghcr.io/${GITHUB_OWNER}/charts` (registre OCI GitHub Container Registry, même pattern que
-   le projet `ansible-builder`)
+1. `lint` (sur chaque push vers `main` et chaque PR) → `helm lint ./CHARTS` + `helm template ./CHARTS`
+2. `package-and-publish` (uniquement sur tag `vX.Y.Z`, après `lint`) → bump `Chart.yaml` depuis
+   `GITHUB_REF_NAME`, `helm package`, puis `helm push` vers `oci://ghcr.io/${OWNER}/charts` (registre
+   OCI GitHub Container Registry, même pattern que le projet `ansible-builder`)
 
-Le job `publish-oci-ghcr` nécessite une variable CI/CD GitLab protégée/masquée `GITHUB_TOKEN`
-(PAT GitHub avec scope `write:packages` sur le compte/org propriétaire) — à configurer dans
-Settings → CI/CD → Variables du projet GitLab. C'est un registre **OCI**, pas Harbor : plus de
-dépendance à un registre interne. Le package ghcr.io créé est **privé par défaut** au premier push —
+Contrairement à l'ancien pipeline GitLab, **aucune configuration manuelle de secret n'est nécessaire** :
+`secrets.GITHUB_TOKEN` est fourni nativement par GitHub Actions à chaque run, avec `permissions:
+packages: write` déclaré dans le job. Le package ghcr.io créé est **privé par défaut** au premier push —
 le rendre public manuellement dans Settings → Packages sur GitHub si l'installation doit être possible
 sans authentification (ex: Rancher en repository OCI anonyme).
 
@@ -103,12 +102,16 @@ Rancher (App → Repositories, type OCI) peut pointer directement sur `oci://ghc
 
 ## Frontière avec `dev-backend`
 
+Ligne de partage simple : tout le code Python (opérateur **et** contrôleur VIP) vit sous `templates/core/`
+et appartient à `dev-backend` ; tout ce qui est déclaratif (CRD, RBAC, Kyverno, templates Jinja2, y
+compris ceux du contrôleur VIP) vit sous `templates/implementations/<nom>/` et est ton domaine :
+
 | Toi (`infra`) — `implementations/*/` + racine chart | `dev-backend` — `core/` |
 |---|---|
-| `Chart.yaml`, `values.yaml` (dont `crd.*`), `_helpers.tpl` | Logique Python générique (`core/CODE/3_operator.yml`) |
-| Contenu des templates rendus (`implementations/*/TEMPLATES/*.yml`) | VIP Controller de l'exemple secure-namespace (`implementations/secure-namespace/CONTROLER/2_VIP-controller.yml`) — code Python, propriété de `dev-backend` même si situé sous `implementations/` |
+| `Chart.yaml`, `values.yaml` (dont `crd.*`), `_helpers.tpl` | Opérateur (`core/CODE/3_operator.yml`) |
+| Contenu des templates rendus (`implementations/*/TEMPLATES/*.yml`, y compris `CONTROLER/TEMPLATES/`) | VIP Controller (`core/CODE/2_VIP-controller.yml`) |
 | Schéma CRD (`implementations/*/CRD/0_CRD.yml`) | Appels à `render_template()` / structure des `values` Jinja2 |
-| RBAC (`implementations/*/RBAC/`), Kyverno (`implementations/*/KYVERNO_rules/`), `.gitlab-ci.yml` | Lecture des champs `spec.*` via `crd_manager.py` |
+| RBAC (`implementations/*/RBAC/`), Kyverno (`implementations/*/KYVERNO_rules/`), `.github/workflows/release.yml` | Lecture des champs `spec.*` via `crd_manager.py` |
 
 Si une tâche touche les deux périmètres (ex: nouveau champ CRD utilisé par le code), le CDP dispatch
 en séquence : toi (schéma CRD) → `dev-backend` (lecture/usage du champ).

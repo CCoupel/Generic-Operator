@@ -204,10 +204,16 @@ see the comment block at the top of either file.
 ### Step 7 — A dedicated sub-controller (optional)
 
 Only needed if part of your reconciliation can't be a one-shot template render — e.g. something that
-watches cluster state continuously per-CR-instance. Reference: `implementations/secure-namespace/CONTROLER/`
-(the VIP egress controller — a self-contained Python app in its own ConfigMap, spawned as a Deployment
-by a Jinja2 template, with its own `CRD_GROUP` env var read independently since it doesn't share
-`core/`'s `config.py`).
+watches cluster state continuously per-CR-instance. Reference: `core/CODE/2_VIP-controller.yml` (the VIP
+egress controller — a self-contained Python app in its own ConfigMap, spawned as a Deployment by a Jinja2
+template under `implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`, with its
+own `CRD_GROUP` env var read independently since it doesn't share `core/`'s `config.py`).
+
+This sub-controller lives in `core/` because its *mechanism* (load templates order → load templates →
+Jinja2 render → apply/delete) is the same generic pipeline as the operator, not because its *content* is
+CRD-agnostic — `controller.py`/`node_finder.py` are full of VIP/Cilium-specific reconciliation logic.
+If you build your own sub-controller, either adapt that business logic for your own use case or skip
+spawning one entirely — it's optional, unlike the operator itself.
 
 ### Step 8 — Validate
 
@@ -233,7 +239,8 @@ applying a sample CR to see the real render errors.
 | Ingress templates (per controller) | `implementations/secure-namespace/CONTROLER/TEMPLATES/1.4-1.6_templates_ingress_*.yml` |
 | RBAC-for-created-namespace templates | `implementations/secure-namespace/TEMPLATES/1.9_templates_rbac.yml` |
 | Templates execution order | `implementations/secure-namespace/TEMPLATES/1.0_templates_order.yml` |
-| Sub-controller (VIP) | `implementations/secure-namespace/CONTROLER/2_VIP-controller.yml` + its own `TEMPLATES/` |
+| Sub-controller (VIP) Python code | `core/CODE/2_VIP-controller.yml` (lives in `core/` — see Step 7) |
+| Sub-controller's own Jinja2 templates | `implementations/secure-namespace/CONTROLER/TEMPLATES/` |
 | Kyverno policies | `implementations/secure-namespace/KYVERNO_rules/*.yaml` |
 | Sample CRs to `kubectl apply` | `CHARTS/examples/*.yml` (top-level, not under `templates/`) |
 

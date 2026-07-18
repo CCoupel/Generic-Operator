@@ -25,7 +25,7 @@ for full detail:
 
 1. **Operator Controller** (`CHARTS/templates/core/CODE/3_operator.yml`): Main reconciliation loop using
    the Kopf framework — the generic engine, watching whatever CRD `values.yaml::crd` points at
-2. **Egress VIP Controller** (`CHARTS/templates/implementations/secure-namespace/CONTROLER/2_VIP-controller.yml`):
+2. **Egress VIP Controller** (`CHARTS/templates/core/CODE/2_VIP-controller.yml`):
    Manages egress gateway and L2 announcement, one instance per `SecureNamespace`
 3. **Kyverno Admission Policies** (`CHARTS/templates/implementations/secure-namespace/KYVERNO_rules/`):
    auto-generates `metadata.name` from `spec.project.solution`/`.environment` and enforces required

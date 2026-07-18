@@ -161,11 +161,16 @@ this implementation's `solution`/`environment` spec shape.
 
 ---
 
-### 2. Egress VIP Controller (`CHARTS/templates/implementations/secure-namespace/CONTROLER/2_VIP-controller.yml`)
+### 2. Egress VIP Controller (`CHARTS/templates/core/CODE/2_VIP-controller.yml`)
 
 **Technology**: Python 3.11 + Kubernetes client, spawned as its own Deployment per `SecureNamespace`
 (via `implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`), not sharing the
-operator's `core/CODE/3_operator.yml` ConfigMap — it reads its own `CRD_GROUP` etc. from its own env vars.
+operator's `core/CODE/3_operator.yml` ConfigMap — it reads its own `CRD_GROUP` etc. from its own env vars
+via a separate `config.py`-less mechanism, and has its own class-based `ResourceManager`/`TemplateManager`
+(same generic render/apply pipeline as the operator, parallel implementation — see the [Component
+Details](#component-details) note below). It lives in `core/` because that pipeline is generic, even
+though its own `controller.py`/`node_finder.py` reconciliation logic is VIP/Cilium-specific, not
+CRD-agnostic.
 
 **Purpose**: Manages egress gateway VIP placement and L2 announcement
 
@@ -1180,7 +1185,7 @@ kubectl rollout restart deployment/secure-namespace-operator -n namespace-operat
 ### Adding New Controller
 
 **Example**: Add a monitoring controller, following the same pattern as the VIP controller
-(`implementations/secure-namespace/CONTROLER/`).
+(`core/CODE/2_VIP-controller.yml`, spawned via `implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`).
 
 **Steps**:
 
@@ -1399,18 +1404,20 @@ CHARTS/
     ├── _helpers.tpl
     ├── core/                                    # generic engine
     │   ├── 10_deployment.yml                    # Operator Deployment + Service
-    │   └── CODE/3_operator.yml                  # config/crd_manager/handlers/operator/
-    │                                             # resource_manager/revision_manager/
-    │                                             # template_manager/utils.py (embedded)
+    │   └── CODE/
+    │       ├── 3_operator.yml                   # config/crd_manager/handlers/operator/
+    │       │                                     # resource_manager/revision_manager/
+    │       │                                     # template_manager/utils.py (embedded)
+    │       └── 2_VIP-controller.yml              # per-CR sub-controller, own ConfigMap — same
+    │                                             # render/apply pipeline as the operator, but its
+    │                                             # own controller.py/node_finder.py are VIP-specific
     └── implementations/
-        └── secure-namespace/                    # this implementation
+        └── secure-namespace/                    # this implementation (declarative only)
             ├── CRD/0_CRD.yml
             ├── RBAC/10_roles.yaml
             ├── KYVERNO_rules/*.yaml              # mutate/validate ClusterPolicy (replaces old webhook)
             ├── TEMPLATES/*.yml                   # 1.0-1.9: order, core, network, rbac, example, vip
-            └── CONTROLER/
-                ├── 2_VIP-controller.yml          # embedded Python (own ConfigMap)
-                └── TEMPLATES/*.yml               # ingress controller (nginx/haproxy/traefik) + VIP templates
+            └── CONTROLER/TEMPLATES/*.yml         # ingress controller (nginx/haproxy/traefik) + VIP templates
 ```
 
 ### Dependencies
@@ -1495,7 +1502,7 @@ When modifying the operator:
 ### Version History
 
 Track changes in Git and bump `Chart.yaml::version`/`appVersion` — the release CI
-(`.gitlab-ci.yml`) sets `Chart.yaml::version` from the git tag automatically on `helm package`.
+(`.github/workflows/release.yml`) sets `Chart.yaml::version` from the git tag automatically on `helm package`.
 
 ---
 

@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint ./CHARTS
+      - run: helm template ./CHARTS > /dev/null
+
+  package-and-publish:
+    name: Package and publish to ghcr.io
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      ARTIFACTS: artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Extract and validate version from tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          if ! echo "${VERSION}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' > /dev/null; then
+            echo "❌ Format de tag invalide: ${GITHUB_REF_NAME} (attendu: vX.Y.Z)"
+            exit 1
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "CHART_OPERATOR=secure-namespace-operator-${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Bump Chart.yaml version
+        run: |
+          sed -i "s/^version:.*/version: ${VERSION}/" CHARTS/Chart.yaml
+          grep -E "^(version|appVersion):" CHARTS/Chart.yaml
+
+      - name: Package chart
+        run: |
+          mkdir -p ${ARTIFACTS}
+          helm package ./CHARTS --destination ${ARTIFACTS}/
+          ls -lrt ${ARTIFACTS}/${CHART_OPERATOR}.tgz
+          tar tzvf ${ARTIFACTS}/${CHART_OPERATOR}.tgz
+
+      - name: Login to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.repository_owner }}" --password-stdin
+
+      - name: Push to oci://ghcr.io
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          helm push ${ARTIFACTS}/${CHART_OPERATOR}.tgz oci://ghcr.io/${OWNER}/charts
+          echo "✅ Publié — installable via: helm install secure-namespace-operator oci://ghcr.io/${OWNER}/charts/secure-namespace-operator --version ${VERSION}"
+
+      - name: Logout
+        if: always()
+        run: helm registry logout ghcr.io || true

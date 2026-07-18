@@ -89,15 +89,19 @@ CHARTS/
 │   ├── _helpers.tpl                   # shared Helm label/name helpers
 │   ├── core/                          # ── GENERIC ENGINE — reusable for any CRD ──
 │   │   ├── 10_deployment.yml          # operator Deployment, injects CRD_GROUP/VERSION/PLURAL env
-│   │   └── CODE/3_operator.yml        # 8 embedded Python modules (kopf handlers, template
-│   │                                  # rendering, resource apply/delete, revision tracking)
+│   │   └── CODE/
+│   │       ├── 3_operator.yml         # 8 embedded Python modules (kopf handlers, template
+│   │       │                          # rendering, resource apply/delete, revision tracking)
+│   │       └── 2_VIP-controller.yml   # per-CR sub-controller: same render/apply pipeline as the
+│   │                                  # operator, spawned by it as its own Deployment per CR
 │   └── implementations/
-│       └── secure-namespace/          # ── EXAMPLE IMPLEMENTATION ──
+│       └── secure-namespace/          # ── EXAMPLE IMPLEMENTATION (declarative only) ──
 │           ├── CRD/0_CRD.yml          # the SecureNamespace CustomResourceDefinition
 │           ├── RBAC/10_roles.yaml     # RBAC for the resource kinds this example manages
 │           ├── KYVERNO_rules/         # admission policies (mutate/validate)
 │           ├── TEMPLATES/             # Jinja2 templates: namespace, quotas, network, RBAC, VIP
-│           └── CONTROLER/             # VIP egress controller (own Python code + templates)
+│           └── CONTROLER/TEMPLATES/   # Jinja2 templates for the VIP controller (ingress
+│                                      # controller manifests, VIP status patches)
 └── examples/                          # sample SecureNamespace custom resources to `kubectl apply`
 ```
 
@@ -117,6 +121,19 @@ None of them reference `SecureNamespace` — the CRD identity comes entirely fro
 | `resource_manager.py` | Generic Kubernetes resource apply/delete via dynamic client |
 | `revision_manager.py` | Revision counter and history ConfigMap management |
 | `utils.py` | Diff formatting, deep merge, spec serialization |
+
+### VIP Controller (`templates/core/CODE/2_VIP-controller.yml`)
+
+A second, per-CR sub-controller, spawned by the operator as its own Deployment (one instance per
+`SecureNamespace`, via `implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`).
+It runs the **same render/apply pipeline** as the operator (`load_templates_order()` →
+`load_templates()` → Jinja2 render → apply/delete resources — its own class-based
+`ResourceManager`/`TemplateManager`, parallel implementations of the same pattern as the operator's
+function-based ones) — which is why it lives in `core/` alongside the operator rather than under
+`implementations/`. Unlike the operator's own modules, though, its `controller.py` (the watch loop) and
+`node_finder.py` (node selection) contain VIP/Cilium-specific reconciliation logic that **is not**
+CRD-agnostic — a different implementation reusing this engine either adapts this controller's business
+logic too, or doesn't spawn a sub-controller at all (it's optional, not part of the minimal contract).
 
 ## Building Your Own Implementation
 
@@ -1033,7 +1050,7 @@ MIT — see [`LICENSE`](LICENSE).
 5. **Update docs** alongside behavior changes: this README, [`CHARTS/README.md`](CHARTS/README.md),
    [`documentation/README.md`](documentation/README.md) (CRD field reference), and
    [`documentation/MAINTENANCE.md`](documentation/MAINTENANCE.md) (internals/troubleshooting).
-6. **Tags**: `vX.Y.Z` (SemVer) — `.gitlab-ci.yml` packages the chart and publishes it to
+6. **Tags**: `vX.Y.Z` (SemVer) — `.github/workflows/release.yml` packages the chart and publishes it to
    `oci://ghcr.io/ccoupel/charts/secure-namespace-operator` automatically on tag push.
 
 ## Support

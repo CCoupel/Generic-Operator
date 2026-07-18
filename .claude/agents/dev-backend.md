@@ -53,7 +53,17 @@ Le dépôt sépare le **moteur générique** (toi) de **l'implémentation d'exem
 | `revision_manager.py` | idem | Compteur de revision + ConfigMap d'historique (`get_revision_number`, `increment_revision`, `add_history_entry_to_configmap`) |
 | `template_manager.py` | idem | Chargement (`load_templates_order`, `load_templates`) et rendu Jinja2 (`render_template`, `get_template_values`) |
 | `utils.py` | idem | `deep_merge`, `spec_to_dict`, `format_diff_entry`, `format_history_text` |
-| VIP Controller (exemple secure-namespace) | `CHARTS/templates/implementations/secure-namespace/CONTROLER/2_VIP-controller.yml` | Contrôleur Python autonome par SecureNamespace (rotation VIP, JSON Patch sur Deployment). Ses propres `CRD_GROUP`/etc. sont lues indépendamment via `os.getenv` (pas de `config.py` partagé avec le moteur — ConfigMap séparée) |
+
+**VIP Controller** — `CHARTS/templates/core/CODE/2_VIP-controller.yml` (6 modules : `config_loader.py`,
+`controller.py`, `job_manager.py`, `node_finder.py`, `resource_manager.py`, `template_manager.py`).
+Sous-contrôleur spawné par l'opérateur, une instance par `SecureNamespace`. Il vit dans `core/` parce que
+son *mécanisme* (load templates order → load templates → rendu Jinja2 → apply/delete) est le même
+pipeline générique que l'opérateur (ses propres `ResourceManager`/`TemplateManager`, en classes —
+implémentation parallèle, pas partagée avec celle de l'opérateur en fonctions). Mais `controller.py` et
+`node_finder.py` contiennent de la logique métier VIP/Cilium **spécifique**, pas agnostique du CRD — ne
+pas présenter ce module comme réutilisable tel quel pour une autre implémentation. Il lit ses propres
+`CRD_GROUP`/etc. indépendamment via `os.getenv` (pas de `config.py` partagé avec l'opérateur — ConfigMap
+séparée, deux fichiers `.py: |` distincts).
 
 ## Stack & Conventions
 
@@ -81,12 +91,16 @@ Le dépôt sépare le **moteur générique** (toi) de **l'implémentation d'exem
 
 ## Frontières avec `infra`
 
+Ligne de partage simple : **tout le code Python vit sous `templates/core/` et est ton domaine** ; tout ce
+qui est déclaratif (CRD, RBAC, Kyverno, templates Jinja2) vit sous `templates/implementations/<nom>/` et
+est le domaine d'`infra` :
+
 | Toi (`dev-backend`) — `templates/core/` | `infra` — `templates/implementations/<nom>/` + racine du chart |
 |---|---|
-| Logique Python générique (`core/CODE/3_operator.yml`) | `Chart.yaml`, `values.yaml` (dont `crd.group/version/kind/plural`), `_helpers.tpl` |
-| VIP Controller de l'exemple secure-namespace (`implementations/secure-namespace/CONTROLER/2_VIP-controller.yml`) — code Python, mais propre à cette implémentation | Contenu des templates rendus (`implementations/*/TEMPLATES/*.yml`) |
+| Opérateur (`core/CODE/3_operator.yml`) | `Chart.yaml`, `values.yaml` (dont `crd.group/version/kind/plural`), `_helpers.tpl` |
+| VIP Controller (`core/CODE/2_VIP-controller.yml`) | Contenu des templates rendus (`implementations/*/TEMPLATES/*.yml`, y compris `CONTROLER/TEMPLATES/`) |
 | Appels à `render_template()` / structure des `values` passées au moteur Jinja2 | Schéma CRD (`implementations/*/CRD/0_CRD.yml`) |
-| Lecture des champs `spec.*` via `crd_manager.py` | RBAC (`implementations/*/RBAC/`), Kyverno (`implementations/*/KYVERNO_rules/`), `.gitlab-ci.yml` |
+| Lecture des champs `spec.*` via `crd_manager.py` | RBAC (`implementations/*/RBAC/`), Kyverno (`implementations/*/KYVERNO_rules/`), `.github/workflows/release.yml` |
 
 Si une tâche touche les deux périmètres (ex: nouveau champ CRD utilisé par le code), le CDP dispatch
 aux deux agents en séquence : `infra` (schéma CRD) → `dev-backend` (lecture/usage du champ).

@@ -30,7 +30,7 @@ _work/
 # Build artifacts (qualif : build/qualif/<version>/)
 build/
 
-# Helm chart package output (produit par .gitlab-ci.yml : helm package --destination artifacts/)
+# Helm chart package output (produit par .github/workflows/release.yml : helm package --destination artifacts/)
 artifacts/
 *.tgz
 
