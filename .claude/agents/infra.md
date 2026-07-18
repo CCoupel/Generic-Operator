@@ -89,9 +89,10 @@ aucun effet ici sans mirroir GitLab). Deux jobs :
 
 Contrairement à l'ancien pipeline GitLab, **aucune configuration manuelle de secret n'est nécessaire** :
 `secrets.GITHUB_TOKEN` est fourni nativement par GitHub Actions à chaque run, avec `permissions:
-packages: write` déclaré dans le job. Le package ghcr.io créé est **privé par défaut** au premier push —
-le rendre public manuellement dans Settings → Packages sur GitHub si l'installation doit être possible
-sans authentification (ex: Rancher en repository OCI anonyme).
+packages: write` déclaré dans le job. Vérifié en conditions réelles (tag `v0.0.2`) : le package ghcr.io
+créé via ce token est directement **public** (hérite de la visibilité du repo, contrairement à un push
+via PAT manuel qui le crée sous le compte utilisateur en privé) — `helm pull` anonyme fonctionne sans
+étape manuelle supplémentaire dans Settings → Packages.
 
 Une fois publié, le chart est installable directement en OCI (chemin toujours en minuscules, ex `ccoupel`
 et non `CCoupel` — contrainte de la spec OCI distribution) :
