@@ -49,8 +49,8 @@
     "templatecentric_text": "All business logic lives in the Jinja2 templates, not the code. A behavior change is usually a template edit, never an engine change.",
     "order_title": "An explicit list of templates to process",
     "order_text": "Execution order is declarative — the Namespace before the NetworkPolicy, for instance — and each entry points to a specific ConfigMap and key.",
-    "controller_title": "Operator + controllers: same engine, continuous mode",
-    "controller_text": "The operator can spawn a dedicated controller per CRD instance — a separate process that replays the exact same pipeline (steps 3 to 6 above) continuously, to watch external state rather than apply a template once. This mechanism is part of the generic engine, not the implementation."
+    "controller_title": "Controllers: same engine, at instance scale",
+    "controller_text": "The operator watches the CRD as a whole — every instance, cluster-wide. A controller runs the exact same generic engine — Jinja2 rendering, generic resource application — but dedicated to a single instance of that CRD, watched continuously by its own process. What the controller watches beyond that instance (a VIP, a Service, something else) is an implementation choice, not a limit of the mechanism: it too is entirely template-driven."
   },
   "reference": {
     "eyebrow": "REFERENCE IMPLEMENTATION",

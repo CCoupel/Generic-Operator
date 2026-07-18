@@ -169,8 +169,8 @@ _action: delete
   - templates-network/network-policy.yaml</code></pre>
         </div>
         <div class="concept-card">
-          <h3 data-i18n="concept.controller_title">Opérateur + contrôleurs : le même moteur, en continu</h3>
-          <p data-i18n="concept.controller_text">L'opérateur peut spawner un contrôleur dédié par instance de CRD — un processus séparé qui rejoue exactement le même pipeline (étapes 3 à 6 ci-dessus) en continu, pour surveiller un état externe plutôt qu'appliquer un template une seule fois. Ce mécanisme fait partie du moteur générique, pas de l'implémentation.</p>
+          <h3 data-i18n="concept.controller_title">Contrôleurs : le même moteur, à l'échelle d'une instance</h3>
+          <p data-i18n="concept.controller_text">L'opérateur surveille le CRD dans son ensemble — toutes les instances, cluster-wide. Un contrôleur applique exactement le même moteur générique — rendu Jinja2, application des ressources — mais dédié à une seule instance de ce CRD, surveillée en continu par son propre processus. Ce que le contrôleur surveille précisément en plus de cette instance (une VIP, un Service, autre chose) est un choix de l'implémentation, pas une limite du mécanisme : lui aussi est piloté entièrement par templates.</p>
           <pre><code>templates/core/CODE/
 ├── 3_operator.yml        # boucle principale
 └── 2_VIP-controller.yml  # contrôleur dédié,

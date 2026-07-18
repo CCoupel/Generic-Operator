@@ -49,8 +49,8 @@
     "templatecentric_text": "Toute la logique métier vit dans les templates Jinja2, pas dans le code. Un changement de comportement passe le plus souvent par l'édition d'un template, jamais par une modification du moteur.",
     "order_title": "Une liste explicite de templates à traiter",
     "order_text": "L'ordre d'exécution est déclaratif — le Namespace avant le NetworkPolicy, par exemple — et chaque entrée pointe vers un ConfigMap et une clé précis.",
-    "controller_title": "Opérateur + contrôleurs : le même moteur, en continu",
-    "controller_text": "L'opérateur peut spawner un contrôleur dédié par instance de CRD — un processus séparé qui rejoue exactement le même pipeline (étapes 3 à 6 ci-dessus) en continu, pour surveiller un état externe plutôt qu'appliquer un template une seule fois. Ce mécanisme fait partie du moteur générique, pas de l'implémentation."
+    "controller_title": "Contrôleurs : le même moteur, à l'échelle d'une instance",
+    "controller_text": "L'opérateur surveille le CRD dans son ensemble — toutes les instances, cluster-wide. Un contrôleur applique exactement le même moteur générique — rendu Jinja2, application des ressources — mais dédié à une seule instance de ce CRD, surveillée en continu par son propre processus. Ce que le contrôleur surveille précisément en plus de cette instance (une VIP, un Service, autre chose) est un choix de l'implémentation, pas une limite du mécanisme : lui aussi est piloté entièrement par templates."
   },
   "reference": {
     "eyebrow": "IMPLÉMENTATION DE RÉFÉRENCE",
