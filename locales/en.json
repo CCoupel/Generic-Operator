@@ -72,7 +72,7 @@
     "controller_note_a": "The VIP controller's Python code, called by these templates, lives in the engine (",
     "controller_note_b": "), not here — see ",
     "controller_note_c": ".",
-    "controller_note_link": "“Operator + controllers” above",
+    "controller_note_link": "“Controllers: same engine, at instance scale” above",
     "install_title": "Installation",
     "oci_title": "From ghcr.io (recommended)",
     "source_title": "From source",

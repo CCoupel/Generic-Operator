@@ -72,7 +72,7 @@
     "controller_note_a": "Le code Python du contrôleur VIP appelé par ces templates vit dans le moteur (",
     "controller_note_b": "), pas ici — voir ",
     "controller_note_c": ".",
-    "controller_note_link": "« Opérateur + contrôleurs » ci-dessus",
+    "controller_note_link": "« Contrôleurs : le même moteur, à l'échelle d'une instance » ci-dessus",
     "install_title": "Installation",
     "oci_title": "Depuis ghcr.io (recommandé)",
     "source_title": "Depuis les sources",
