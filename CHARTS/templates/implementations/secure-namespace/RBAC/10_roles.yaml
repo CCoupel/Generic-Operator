@@ -1,0 +1,187 @@
+# ServiceAccount pour l'opérateur
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secure-namespace-operator
+  namespace: {{ .Release.Namespace }}    
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+
+---
+# ClusterRole avec les permissions nécessaires
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: secure-namespace-operator-role
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  #totales permission to allow cluster roles creation
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Permissions pour gérer les namespaces
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour lire et mettre à jour les CRD SecureNamespace
+  - apiGroups: ["{{ .Values.crd.group }}"]
+    resources: ["{{ .Values.crd.plural }}"]
+    verbs: ["get", "list", "watch", "patch"]
+
+  # Permissions pour mettre à jour le status des SecureNamespace
+  - apiGroups: ["{{ .Values.crd.group }}"]
+    resources: ["{{ .Values.crd.plural }}/status"]
+    verbs: ["get", "patch", "update","create"]
+
+  # Permissions pour gérer les ressources dans les namespaces
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "serviceaccounts", "endpoints", "pods", "nodes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour les secrets (AJOUT: nécessaire pour ingress)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour lire les logs des pods
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+
+  # Permissions pour les Deployments
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour les Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Permissions pour le statut des Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs/status"]
+    verbs: ["get"]
+
+  # Permissions pour les Ingresses (AJOUT: nécessaire pour créer ClusterRoleBinding)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour les Ingresses status (AJOUT)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["get", "update"]
+
+  # Permissions pour les IngressClass
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour les EndpointSlices (AJOUT: nécessaire pour créer ClusterRoleBinding)
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+
+  # Permissions pour les NetworkPolicies Cilium
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies", "ciliumegressgatewaypolicies", "ciliuml2announcementpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour créer des events (AJOUT: nécessaire pour créer ClusterRoleBinding)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+  # Permissions pour les CRDs
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour ClusterRole et ClusterRoleBinding
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour Quotas
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Permissions pour Leases
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: secure-namespace-operator-rolebinding
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: secure-namespace-operator-role
+subjects:
+  - kind: ServiceAccount
+    name: secure-namespace-operator
+    namespace: {{ .Release.Namespace }} 
+---
+# ClusterRoleBinding from NGINX
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: secure-namespace-operator-rolebinding-nginx
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ingress-nginx-controller
+subjects:
+  - kind: ServiceAccount
+    name: secure-namespace-operator
+    namespace: {{ .Release.Namespace }} 
+---
+# ClusterRoleBinding from HAPROXY
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: secure-namespace-operator-rolebinding-haproxy
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ingress-haproxy-controller
+subjects:
+  - kind: ServiceAccount
+    name: secure-namespace-operator
+    namespace: {{ .Release.Namespace }} 
+---
+# ClusterRoleBinding from Traefik
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: secure-namespace-operator-rolebinding-traefik
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ingress-traefik-controller
+subjects:
+  - kind: ServiceAccount
+    name: secure-namespace-operator
+    namespace: {{ .Release.Namespace }} 
+---

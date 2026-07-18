@@ -1,0 +1,57 @@
+# ConfigMap 1 - Core Resources (Namespace, Quotas)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-core
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  namespace.yaml: |
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: [{ namespace_name }]
+      labels:
+        name: [{ namespace_name }]
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        network.cilium.io/policy: "true"
+        field.cattle.io/projectId: [{ solution }]
+        managed-by: secure-namespace-operator
+
+  resource-quota.yaml: |
+    apiVersion: v1
+    kind: ResourceQuota
+    metadata:
+      name: [{ namespace_name }]-quota
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-namespace: [{ namespace_name }]
+    [% if spec.quotas.enabled %]
+    _action: apply
+    spec:
+      hard:
+        # Compute quotas
+        requests.cpu: "[{ spec.quotas.compute['requests.cpu'] }]"
+        requests.memory: "[{ spec.quotas.compute['requests.memory'] }]"
+        limits.cpu: "[{ spec.quotas.compute['limits.cpu'] }]"
+        limits.memory: "[{ spec.quotas.compute['limits.memory'] }]"
+        
+        # Storage quotas
+        requests.storage: "[{ spec.quotas.storage['requests.storage'] }]"
+        persistentvolumeclaims: "[{ spec.quotas.storage.persistentvolumeclaims }]"
+        
+        # Object quotas
+        pods: "[{ spec.quotas.objects.pods }]"
+        services: "[{ spec.quotas.objects.services }]"
+        configmaps: "[{ spec.quotas.objects.configmaps }]"
+        secrets: "[{ spec.quotas.objects.secrets }]"
+    [% else %]
+    _action: delete
+    [% endif %]
+

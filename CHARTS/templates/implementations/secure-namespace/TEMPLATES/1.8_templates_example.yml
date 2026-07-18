@@ -1,0 +1,122 @@
+#ConfigMap 8 - Example Application
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-apps
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  example-app.yaml: |
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: example-service
+      namespace: [{ namespace_name }]
+    [% if spec.example.enabled %]
+    _action: apply
+    spec:
+      selector:
+        app: example-app
+      ports:
+      - port: 80
+        targetPort: 80
+    [% else %]
+    _action: delete
+    [% endif %]
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: example-app
+      namespace: [{ namespace_name }]
+     [% if spec.example.enabled %]
+    _action: apply
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: example-app
+      template:
+        metadata:
+          labels:
+            app: example-app
+        spec:
+          containers:
+          - name: example-container
+            image: [{ spec.example.image }]
+            ports:
+            - containerPort: 80
+            resources:
+              requests:
+                cpu: "128m"
+                memory: "64Mi"
+              limits:
+                cpu: "512m"
+                memory: "128Mi"
+    [% else %]
+    _action: delete
+    [% endif %]
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: default-http-ingress
+      namespace: [{ namespace_name }]
+      annotations:
+    [% if spec.ingress.enabled and spec.ingress.controller.type == 'traefik' %]
+        traefik.ingress.kubernetes.io/router.entrypoints: web
+    [% endif %]
+     [% if spec.example.enabled and spec.ingress.controller.type != 'nginx' %]
+    _action: apply
+    spec:
+      ingressClassName: [{ namespace_name }]
+      rules:
+      - host: "[{ spec.example.hostPrefix }].[{ domain }]"
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example-service
+                port:
+                  number: 80
+    [% else %]
+    _action: delete
+    [% endif %]
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: default-https-ingress
+      namespace: [{ namespace_name }]
+      annotations:
+        cert-manager.io/cluster-issuer: secure-ns-ca
+        [% if spec.ingress.enabled and spec.ingress.controller.type == 'traefik' %]
+        traefik.ingress.kubernetes.io/router.entrypoints: websecure
+        [% endif %]
+    [% if spec.example.enabled %]
+    _action: apply
+    spec:
+      ingressClassName: [{ namespace_name }]
+      rules:
+      - host: "[{ spec.example.hostPrefix }]"
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example-service
+                port:
+                  number: 80
+      tls:
+      - hosts:
+          - [{ spec.example.hostPrefix }]
+        secretName: default-https-ingress
+    [% else %]
+    _action: delete
+    [% endif %]

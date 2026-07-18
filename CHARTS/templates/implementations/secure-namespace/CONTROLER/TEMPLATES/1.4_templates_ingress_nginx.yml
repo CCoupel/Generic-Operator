@@ -1,0 +1,314 @@
+# ConfigMap 4 - NGINX Ingress Controller
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-ingress-nginx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  rbac.yaml: |
+    [% if spec.ingress.enabled and spec.ingress.controller.type == 'nginx' %]
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-controller
+      labels:
+        app.kubernetes.io/component: rbac
+        app.kubernetes.io/name: ingress-nginx
+    rules:
+    # Permissions pour lire les ressources globales
+    - apiGroups: [""]
+      resources: ["configmaps", "endpoints", "nodes", "pods", "secrets", "namespaces"]
+      verbs: ["list", "watch", "get"]
+    - apiGroups: [""]
+      resources: ["nodes"]
+      verbs: ["get"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods", "secrets", "configmaps"]
+      verbs: ["get", "create", "update"]
+    # Permissions pour les events
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["list", "watch", "get", "update", "create"]
+    # Permissions pour les leases (leader election)
+    - apiGroups: ["coordination.k8s.io"]
+      resources: ["leases"]
+      verbs: ["list", "watch", "get", "update", "create"]
+    # Permissions pour les ingresses
+    - apiGroups: ["networking.k8s.io"]
+      resources: ["ingresses", "ingressclasses"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["networking.k8s.io"]
+      resources: ["ingresses/status"]
+      verbs: ["update"]
+    # Permissions pour les endpointslices
+    - apiGroups: ["discovery.k8s.io"]
+      resources: ["endpointslices"]
+      verbs: ["list", "watch", "get"]
+
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-sa
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        app.kubernetes.io/name: ingress-nginx
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-binding
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-namespace: [{ namespace_name }]
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: [{ namespace_name }]-ingress-nginx-controller
+    subjects:
+    - kind: ServiceAccount
+      name: [{ namespace_name }]-ingress-nginx-sa
+      namespace: [{ namespace_name }]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-role
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+    rules:
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["create", "patch"]
+    - apiGroups: ["coordination.k8s.io"]
+      resources: ["leases"]
+      verbs: ["create", "get", "update", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["create", "get", "update", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list", "watch"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-binding
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: [{ namespace_name }]-ingress-nginx-role
+    subjects:
+    - kind: ServiceAccount
+      name: [{ namespace_name }]-ingress-nginx-sa
+      namespace: [{ namespace_name }]
+    [% else %]
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-controller
+    _action: delete
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-sa
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-binding
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-role
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-nginx-binding
+      namespace: [{ namespace_name }]
+    _action: delete
+    [% endif %]
+
+  deployment.yaml: |
+    # NGINX Deployment (voir fichier original pour le contenu complet)
+    # Simplifié ici pour la longueur du fichier
+    [% if spec.ingress.enabled and spec.ingress.controller.type  == 'nginx' %]
+
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: [{ namespace_name }]-nginx-ingress-controller
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        app: ingress-controller
+        ingress-type: nginx
+        managed-namespace: [{ namespace_name }]
+    spec:
+      replicas: [{ spec.ingress.controller.replicas }]
+      selector:
+        matchLabels:
+          app: [{ namespace_name }]-ingress-controller
+      template:
+        metadata:
+          labels:
+            app: [{ namespace_name }]-ingress-controller
+            managed-namespace: [{ namespace_name }]
+        spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: [{ spec.ingress.controller.nodeSelector.label }]
+                        operator: In
+                        values:
+                          - [{ spec.ingress.controller.nodeSelector.value }]
+          serviceAccountName: [{ namespace_name }]-ingress-nginx-sa
+          containers:
+          - name: nginx-ingress-controller
+            image: registry.k8s.io/ingress-nginx/controller:v1.8.1
+            args:
+            - /nginx-ingress-controller
+            - --publish-service=[{ namespace_name }]/[{ spec.ingress.serviceName }]
+            - --election-id=ingress-controller-leader-[{ namespace_name | truncate(20, True, '') | trim('-') }]
+            - --ingress-class=[{ namespace_name }]
+            - --configmap=[{ namespace_name }]/ingress-nginx-config
+            - --watch-namespace=[{ namespace_name }]
+            - --http-port=80
+            - --https-port=443
+            - --healthz-port=10254
+            env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace  # CORRECTION : Utilise le vrai namespace du pod
+            resources:
+              requests:
+                cpu: [{ spec.ingress.controller.resources.requests.cpu }]
+                memory: [{ spec.ingress.controller.resources.requests.memory }]
+              limits:
+                cpu: [{ spec.ingress.controller.resources.limits.cpu }]
+                memory: [{ spec.ingress.controller.resources.limits.memory }]
+            ports:
+            - name: http
+              containerPort: 80
+            - name: https
+              containerPort: 443
+            - name: metrics
+              containerPort: 10254
+            - name: stats
+              containerPort: 1024
+            livenessProbe:
+              httpGet:
+                path: /healthz
+                port: 10254
+                scheme: HTTP
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 1
+            readinessProbe:
+              httpGet:
+                path: /healthz
+                port: 10254
+                scheme: HTTP
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 1
+            securityContext:
+              allowPrivilegeEscalation: true
+              capabilities:
+                drop:
+                - ALL
+                add:
+                - NET_BIND_SERVICE
+              runAsUser: 101
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ingress-nginx-config
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+    data:
+      # Activer stub_status sur le port 1024
+      http-snippet: |
+        server {
+          listen 1024;
+          server_name _;
+          
+          location /nginx_status {
+            stub_status on;
+            access_log off;
+          }
+          
+          location /stats {
+            stub_status on;
+            access_log off;
+          }
+        
+        location /configuration {
+                  client_max_body_size                    21M;
+                  client_body_buffer_size                 21M;
+                  proxy_buffering                         off;
+
+                  content_by_lua_block {
+                          configuration.call()
+                  }
+          }
+        }
+      # Autres configurations
+      use-forwarded-headers: "true"
+      compute-full-forwarded-for: "true"
+      use-proxy-protocol: "false"
+
+    [% else %]
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: [{ namespace_name }]-nginx-ingress-controller
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ingress-nginx-config
+      namespace: [{ namespace_name }]
+    _action: delete
+    [% endif %]

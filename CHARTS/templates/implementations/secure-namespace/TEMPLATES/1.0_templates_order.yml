@@ -1,0 +1,35 @@
+# ConfigMap principal - Ordre d'exécution des templates
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secure-namespace-operator-templates-order
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  templates-order.yaml: |
+    # Format: configmap/template-key
+    templates:
+      # Core Resources
+      - templates-core/namespace.yaml
+      - templates-core/resource-quota.yaml
+      
+      # Network Resources
+      - templates-network/network-policy.yaml
+      - templates-network/network-external-access.yaml
+      - templates-network/network-infrastructure-access.yaml
+
+
+      
+      # Egress Controller
+      #- templates-egress/controller-rbac.yaml
+      - templates-egress/controller-deployment.yaml
+      
+      # Example Application
+      - templates-apps/example-app.yaml
+      
+      # Service Accounts
+      - templates-rbac/service-account.yaml
+      - templates-rbac/service-account-roles.yaml

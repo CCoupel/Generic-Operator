@@ -1,0 +1,50 @@
+# =========================================================================
+# Règle 2: Mutation - Génération automatique de metadata.name
+# metadata.name = <solution>-<lower(environment)>
+# =========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: securenamespace-mutate-name
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kyverno-policy
+  annotations:
+    policies.kyverno.io/title: "Auto-generate SecureNamespace Name"
+    policies.kyverno.io/category: "Mutation"
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Génère automatiquement metadata.name au format <solution>-<environment>
+      lors de la création d'un SecureNamespace.
+      L'environment est converti en minuscules.
+      Remplace la mutation du webhook Flask.
+spec:
+  rules:
+    - name: set-name-from-solution-environment
+      match:
+        any:
+          - resources:
+              kinds:
+                - {{ .Values.crd.group }}/{{ .Values.crd.version }}/{{ .Values.crd.kind }}
+              operations:
+                - CREATE
+      context:
+        - name: solution
+          variable:
+            jmesPath: "request.object.spec.project.solution"
+        - name: environment
+          variable:
+            jmesPath: "to_lower(request.object.spec.project.environment || 'dev')"
+        - name: expectedName
+          variable:
+            value: "{{ "{{" }} solution {{ "}}" }}-{{ "{{" }} environment {{ "}}" }}"
+      preconditions:
+        all:
+          # Ne muter que si le nom est absent ou différent du format attendu
+          - key: "{{ "{{" }} request.object.metadata.name || '' {{ "}}" }}"
+            operator: NotEquals
+            value: "{{ "{{" }} expectedName {{ "}}" }}"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            name: "{{ "{{" }} expectedName {{ "}}" }}"

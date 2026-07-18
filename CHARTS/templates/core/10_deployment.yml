@@ -1,0 +1,127 @@
+#10_deployment.yml
+
+# Deployment de l'opérateur
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-namespace-operator
+  namespace: {{ .Release.Namespace }}    
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+    app: secure-namespace-operator
+  
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "secure-namespace-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: operator
+      app: secure-namespace-operator
+  template:
+    metadata:
+      labels:
+        {{- include "secure-namespace-operator.labels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+        app: secure-namespace-operator
+    spec:
+      serviceAccountName: secure-namespace-operator
+      containers:
+      - name: operator
+        image: python:3.11-slim
+        env:
+          {{- if .Values.proxy.enabled }}
+          - name: http_proxy
+            value: {{ .Values.proxy.http | quote }}
+          - name: https_proxy
+            value: {{ .Values.proxy.https | quote }}
+          - name: no_proxy
+            value: {{ .Values.proxy.noProxy | quote }}
+          {{- end }}
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: OPERATOR_NAMESPACE
+            value: {{ .Release.Namespace }}
+          # ⭐ CRD piloté par le moteur générique (voir values.yaml::crd)
+          - name: CRD_GROUP
+            value: {{ .Values.crd.group | quote }}
+          - name: CRD_VERSION
+            value: {{ .Values.crd.version | quote }}
+          - name: CRD_PLURAL
+            value: {{ .Values.crd.plural | quote }}
+          # ⭐ Intervalle de réconciliation périodique (en secondes)
+          - name: RECONCILE_INTERVAL_SECONDS
+            value: "{{ .Values.operator.reconcile.intervalSeconds }}"
+          # ⭐ Délai initial avant la première réconciliation (en secondes)
+          - name: RECONCILE_INITIAL_DELAY_SECONDS
+            value: "{{ .Values.operator.reconcile.initialDelaySeconds }}"
+          - name: LOG_LEVEL
+            value: {{ .Values.operator.logLevel | default "INFO" }}
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Installation des dépendances
+          pip install --upgrade pip
+          pip install --no-cache-dir kopf kubernetes jinja2 pyyaml
+          
+          # Copier TOUS les fichiers Python depuis le ConfigMap vers /app
+          echo "📦 Copie des modules Python..."
+          cp /operator-code/*.py /app/
+          chmod +x /app/*.py
+          
+          # Vérifier que tous les fichiers sont copiés
+          echo "✅ Fichiers Python disponibles:"
+          ls -la /app/*.py
+          
+          # Lancer l'opérateur avec kopf
+          cd /app
+          unset http_proxy
+          unset https_proxy
+          
+          echo "🚀 Démarrage de l'opérateur..."
+          kopf run operator.py --verbose --liveness=http://0.0.0.0:8080/healthz
+        
+        volumeMounts:
+        - name: operator-code
+          mountPath: /operator-code
+        - name: app
+          mountPath: /app
+        
+        # Probes pour Kubernetes
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        
+        resources:
+          {{- toYaml .Values.operator.resources | nindent 10 }}
+
+      volumes:
+      - name: operator-code
+        configMap:
+          name: secure-namespace-operator-code
+          defaultMode: 0755
+      - name: app
+        emptyDir: {}
+
+
+---
+# Service pour les métriques (optionnel)
+apiVersion: v1
+kind: Service
+metadata:
+  name: secure-namespace-operator
+  namespace: {{ .Release.Namespace }}    
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  selector:
+    app: secure-namespace-operator

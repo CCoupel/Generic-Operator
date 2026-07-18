@@ -1,0 +1,91 @@
+# .gitlab-ci.yml
+stages:
+  - validate
+  - package
+  - release
+
+variables:
+  CHART_PATH: ./CHARTS
+  ARTIFACTS: artifacts
+  GITHUB_REPO: CCoupel/Generic-Operator
+
+lint-chart-operator:
+  stage: validate
+  image: 
+    name: alpine/helm:latest
+    entrypoint:
+      - /bin/bash 
+      - -c
+  script:
+    - helm lint ${CHART_PATH}
+  #only:
+  #  - tags
+  #  - merge_requests
+
+package-chart-operator:
+  stage: package
+  image: 
+    name: alpine/helm:latest
+    entrypoint:
+      - /bin/bash 
+      - -c
+  script:
+    # Extraire et valider la version
+    - VERSION=${CI_COMMIT_TAG#v}
+    - CHART_OPERATOR="secure-namespace-operator-${VERSION}"
+
+    - echo "📦 Version extrait du tag:${VERSION}"
+    
+    # Validation du format sémantique (X.Y.Z)
+    - |
+      if ! echo "${VERSION}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' > /dev/null; then
+        echo "❌ Format de tag invalide: ${CI_COMMIT_TAG}"
+        echo "Utilise le format: vX.Y.Z (ex: v1.0.0)"
+        exit 1
+      fi
+    
+      # Mettre à jour Chart.yaml
+    -  sed -i "s/^version:.*/version:\ ${VERSION}/" ${CHART_PATH}/Chart.yaml
+    
+    # Vérifier les changements
+    - echo "✅ Chart.yaml mis à jour:"
+    - grep -E "^(version|appVersion):" ${CHART_PATH}/Chart.yaml
+    
+    # Packager et vérifier le contenu
+    - rm -rf "${ARTIFACTS}/*.tgz"
+    - mkdir -p "${ARTIFACTS}"
+    - helm package ${CHART_PATH} --destination ${ARTIFACTS}/
+    - echo "✅ Package créé:"
+    - ls -lrt ${ARTIFACTS}/${CHART_OPERATOR}.tgz
+    - tar tzvf ${ARTIFACTS}/${CHART_OPERATOR}.tgz
+  artifacts:
+    paths:
+      - "${ARTIFACTS}/*.tgz"
+    expire_in: 1 hour
+  only:
+    - tags
+
+publish-oci-ghcr:
+  stage: release
+  image:
+    name: alpine/helm:latest
+    entrypoint:
+      - /bin/bash
+      - -c
+  script:
+    - VERSION=${CI_COMMIT_TAG#v}
+    - CHART_OPERATOR="secure-namespace-operator-${VERSION}"
+    - OPERATOR_PACKAGE=${ARTIFACTS}/${CHART_OPERATOR}.tgz
+    - ls -lh ${ARTIFACTS}/
+    - GITHUB_OWNER=${GITHUB_REPO%%/*}
+    # Les chemins OCI doivent etre en minuscules (spec OCI distribution) — le login GitHub, lui, est insensible a la casse
+    - GHCR_OWNER=$(echo "${GITHUB_OWNER}" | tr '[:upper:]' '[:lower:]')
+    - echo "📦 Publishing ${OPERATOR_PACKAGE} to oci://ghcr.io/${GHCR_OWNER}/charts"
+    - echo "${GITHUB_TOKEN}" | helm registry login ghcr.io --username ${GITHUB_OWNER} --password-stdin
+    - helm push ${OPERATOR_PACKAGE} oci://ghcr.io/${GHCR_OWNER}/charts
+    - helm registry logout ghcr.io
+    - echo "✅ Publié — installable via: helm install secure-namespace-operator oci://ghcr.io/${GHCR_OWNER}/charts/secure-namespace-operator --version ${VERSION}"
+  only:
+    - tags
+  dependencies:
+    - package-chart-operator

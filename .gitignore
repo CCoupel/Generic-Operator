@@ -1,0 +1,44 @@
+# Fichiers TEMPLATE — fetches depuis GitHub a chaque /init-project
+# Ne pas modifier manuellement, ils seront ecrases lors de la prochaine sync
+#
+# IMPORTANT : Ce fichier est copie par /init-project en tant que .gitignore
+# a la racine du projet cible. Il n'est PAS actif dans le template repo lui-meme.
+
+# Repertoire source du template (fetch depuis GitHub)
+TEMPLATE_claude/
+
+# Commandes template générées depuis TEMPLATE_claude/ (*.md — jamais éditées manuellement)
+# Les commandes sont directement invocables comme /xxx — pas de fichier compagnon projet
+.claude/commands/*.md
+.claude/commands/*.template.md
+.claude/commands/context/
+
+# Agents template générés depuis TEMPLATE_claude/ (*.template.md — jamais édités manuellement)
+# Les *.md dans agents/ (hors dev-*) sont des adaptations projet — trackés dans git
+.claude/agents/*.template.md
+.claude/agents/context/
+
+# Fichiers PROJET — toujours git trackes (ne pas ajouter ici)
+# .claude/CLAUDE.md
+# .claude/project-config.json
+# .claude/memory/
+# .claude/agents/dev-backend.md
+
+# Dossier de travail inter-agents (rapports et handoffs temporaires)
+_work/
+
+# Build artifacts (qualif : build/qualif/<version>/)
+build/
+
+# Helm chart package output (produit par .gitlab-ci.yml : helm package --destination artifacts/)
+artifacts/
+*.tgz
+
+# Python
+__pycache__/
+*.pyc
+
+# Editeurs / OS
+.idea/
+.vscode/
+.DS_Store

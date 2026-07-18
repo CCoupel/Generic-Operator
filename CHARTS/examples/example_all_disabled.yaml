@@ -1,0 +1,17 @@
+apiVersion: secure-ns.example.com/v1alpha1
+kind: SecureNamespace
+metadata:
+spec:
+  egressController:
+    enabled: false
+  ingress:
+    enabled: false
+  network:
+    isolationEnabled: true
+  project:
+    environment: dev
+    solution: cco
+  quotas:
+    enabled: false
+  example:
+    enabled: true

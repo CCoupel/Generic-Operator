@@ -1,0 +1,1877 @@
+# VIP Controller v6.0 - ConfigMap Python Code COMPLET
+# Architecture Template-Centric avec détection de changements
+#
+# CHANGEMENTS v6.0:
+# - ⭐ Passe last_vip et last_node aux templates
+# - ⭐ Les templates décident de TOUTE la logique métier
+# - ⭐ Zéro if/else métier dans le controller Python
+# - ⭐ Jobs et templates lus depuis templates-order.yaml
+# - ⭐ Exécution systématique à chaque reconcile
+#
+# MODULES:
+#   config_loader.py    → Charge config + détecte changements
+#   controller.py       → Orchestrateur simple (observe + délègue)
+#   job_manager.py      → Exécute jobs depuis templates
+#   node_finder.py      → Trouve node hébergeant VIP
+#   resource_manager.py → SSA + finalizers
+#   template_manager.py → Charge et rend templates Jinja2
+#   requirements.txt    → Dépendances Python
+#
+# Compatible avec templates Jobs v6.1 (cleanup préventif à l'init)
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vip-controller-python-code
+  namespace: {{ .Release.Namespace }} 
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/name: vip-controller
+    app.kubernetes.io/version: "6.0"
+    app.kubernetes.io/component: python-code
+    app.kubernetes.io/managed-by: secure-namespace-operator
+data:
+  config_loader.py: |
+    #!/usr/bin/env python3
+    """
+    Config Loader v6.0 - Charge config depuis CRD SecureNamespace
+    Détecte les changements pour passer last_vip/last_node aux templates
+    """
+    import os
+    import logging
+    import json
+    import kubernetes
+    from kubernetes import client
+
+    # CRD piloté par le moteur générique (voir values.yaml::crd)
+    CRD_GROUP = os.getenv('CRD_GROUP', 'secure-ns.example.com')
+    CRD_VERSION = os.getenv('CRD_VERSION', 'v1alpha1')
+    CRD_PLURAL = os.getenv('CRD_PLURAL', 'securenamespaces')
+
+    logger = logging.getLogger(__name__)
+
+
+    def deep_merge(base, override):
+        """Merge récursif de deux dictionnaires"""
+        result = base.copy()
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+
+    def extract_defaults_recursive_dict(schema):
+        """Extrait récursivement les valeurs par défaut d'un schema"""
+        if not isinstance(schema, dict):
+            return {}
+        if 'default' in schema and schema['default'] is not None:
+            return schema['default']
+        if schema.get('type') == 'object' and 'properties' in schema:
+            result = {}
+            for prop_name, prop_schema in schema['properties'].items():
+                prop_default = extract_defaults_recursive_dict(prop_schema)
+                if prop_default is not None and prop_default != {}:
+                    result[prop_name] = prop_default
+            return result if result else {}
+        return {}
+
+
+    def extract_defaults_from_crd():
+        """Charge le CRD et extrait les defaults depuis le schéma OpenAPI v3"""
+        try:
+            api = client.ApiextensionsV1Api()
+            crd = api.read_custom_resource_definition(name=f'{CRD_PLURAL}.{CRD_GROUP}')
+            schema_obj = crd.spec.versions[0].schema.open_apiv3_schema
+            schema_dict = schema_obj.to_dict() if hasattr(schema_obj, 'to_dict') else schema_obj
+            spec_schema = schema_dict.get('properties', {}).get('spec', {})
+            defaults = extract_defaults_recursive_dict(spec_schema)
+            return defaults if defaults else {}
+        except Exception as e:
+            logger.warning(f"⚠️  Impossible d'extraire les defaults du CRD: {e}")
+            return {}
+
+
+    def apply_defaults_to_spec(spec):
+        """Applique les valeurs par défaut du CRD au spec fourni"""
+        defaults = extract_defaults_from_crd()
+        return deep_merge(defaults, spec)
+
+
+    def extract_namespace_info(spec):
+        """Extrait les informations de namespace depuis le spec"""
+        solution = spec.get('project', {}).get('solution', 'default')
+        environment = spec.get('project', {}).get('environment', 'dev').lower()
+        namespace_name = spec.get('namespaceName')
+        if not namespace_name:
+            namespace_name = f"{solution}-{environment}"
+        return solution, environment, namespace_name
+
+
+    def get_template_values(spec, securenamespace_name, operator_namespace):
+        """Construit le dictionnaire de valeurs pour le rendu des templates"""
+        complete_spec = apply_defaults_to_spec(spec)
+        solution, environment, namespace_name = extract_namespace_info(complete_spec)
+
+        ingress_config = complete_spec.get('ingress', {})
+        ingress_domain = ingress_config.get('domain', '')
+        if ingress_domain:
+            domain = f"{environment}.{solution}.{ingress_domain}"
+        else:
+            domain = f"{environment}.{solution}.local"
+
+        return {
+            'spec': complete_spec,
+            'solution': solution,
+            'environment': environment,
+            'namespace_name': namespace_name,
+            'securenamespace_name': securenamespace_name,
+            'operator_namespace': operator_namespace,
+            'l2_policy_name': f"{namespace_name}-l2-policy",
+            'egress_policy_name': f"{namespace_name}-egress",
+            'domain': domain,
+        }
+
+
+    class ConfigLoader:
+        """Charge la configuration complète depuis le CRD SecureNamespace"""
+
+        def __init__(self, securenamespace_name):
+            self.securenamespace_name = securenamespace_name
+            self.operator_namespace = os.getenv('NAMESPACE', 'namespace-operator')
+            self._spec = None
+            self._resource_version = None
+            self._values = None
+            self.custom_api = client.CustomObjectsApi()
+
+            logger.info(f"📦 ConfigLoader initialized for {securenamespace_name}")
+
+        def load_securenamespace(self):
+            """Charge le SecureNamespace depuis l'API Kubernetes"""
+            try:
+                resource = self.custom_api.get_cluster_custom_object(
+                    group=CRD_GROUP, version=CRD_VERSION,
+                    plural=CRD_PLURAL, name=self.securenamespace_name
+                )
+
+                self._spec = resource.get('spec', {})
+                self._resource_version = resource.get('metadata', {}).get('resourceVersion')
+                self._values = get_template_values(
+                    self._spec, self.securenamespace_name, self.operator_namespace
+                )
+
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ Cannot load SecureNamespace '{self.securenamespace_name}': {e}")
+                return False
+
+        def get_values(self):
+            """Retourne les valeurs pour les templates"""
+            if self._values is None:
+                self.load_securenamespace()
+            return self._values or {}
+
+        def get_resource_version(self):
+            """Retourne la resourceVersion actuelle"""
+            return self._resource_version
+
+        def has_changed(self):
+            """Vérifie si le SecureNamespace a changé"""
+            try:
+                resource = self.custom_api.get_cluster_custom_object(
+                    group=CRD_GROUP, version=CRD_VERSION,
+                    plural=CRD_PLURAL, name=self.securenamespace_name
+                )
+                new_version = resource.get('metadata', {}).get('resourceVersion')
+                return new_version != self._resource_version
+            except:
+                return False
+
+        def reload(self):
+            """Recharge le SecureNamespace"""
+            old_version = self._resource_version
+            self.load_securenamespace()
+            return self._resource_version != old_version
+
+        def log_config(self):
+            """Log la configuration actuelle"""
+            values = self.get_values()
+            spec = values.get('spec', {})
+
+            logger.info("=" * 60)
+            logger.info("VIP Controller v6.0 - Configuration")
+            logger.info("=" * 60)
+            logger.info(f"SecureNamespace: {values.get('securenamespace_name')}")
+            logger.info(f"Namespace: {values.get('namespace_name')}")
+            logger.info(f"Solution: {values.get('solution')}")
+            logger.info(f"Environment: {values.get('environment')}")
+            logger.info(f"Ingress enabled: {spec.get('ingress', {}).get('enabled')}")
+            logger.info(f"Egress enabled: {spec.get('egressController', {}).get('enabled')}")
+            logger.info("=" * 60)
+  controller.py: |
+    #!/usr/bin/env python3
+    """
+    VIP Controller v6.0.6 - Fix initialized pour watchers
+
+    CHANGEMENTS v6.0.6:
+    - ⭐ GARDE self.initialized mais SEULEMENT pour les watchers
+    - ⭐ Pas de logique métier basée sur initialized
+    - ⭐ initialized devient un simple flag "premier événement traité"
+    """
+
+    import os
+    import sys
+    import time
+    import logging
+    import signal
+    import copy
+    import threading
+
+    from datetime import datetime
+    from kubernetes import client, config, watch
+    from kubernetes.client.rest import ApiException
+
+    from template_manager import TemplateManager
+    from resource_manager import ResourceManager
+    from job_manager import JobManager
+    from node_finder import NodeFinder
+    from config_loader import ConfigLoader
+
+    # CRD piloté par le moteur générique (voir values.yaml::crd)
+    CRD_GROUP = os.getenv('CRD_GROUP', 'secure-ns.example.com')
+    CRD_VERSION = os.getenv('CRD_VERSION', 'v1alpha1')
+    CRD_PLURAL = os.getenv('CRD_PLURAL', 'securenamespaces')
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+
+    LABEL_NODE_NAME = "egress-vip.io/node"
+    LABEL_VIP = "egress-vip.io/vip"
+    LABEL_LAST_UPDATE = "egress-vip.io/last-update"
+    LABEL_SERVICE_NAME = "egress-vip.io/service-name"
+
+
+    class VIPController:
+        def __init__(self):
+            config.load_incluster_config()
+            self.operator_namespace = os.getenv("NAMESPACE", "namespace-operator")
+            self.deployment_name = os.getenv("DEPLOYMENT_NAME")
+            securenamespace_name = os.getenv("SECURENAMESPACE_NAME")
+
+            if not securenamespace_name or not self.deployment_name:
+                raise ValueError("SECURENAMESPACE_NAME and DEPLOYMENT_NAME required")
+
+            self.config_loader = ConfigLoader(securenamespace_name)
+            if not self.config_loader.load_securenamespace():
+                raise ValueError(f"Cannot load SecureNamespace")
+
+            # ⭐ GARANTIE: Toujours un dict
+            self.previous_spec = {}
+            self.previous_vip = None
+            self.previous_node = None
+
+            self._reconcile_lock = threading.Lock()
+            self._reconcile_pending = False
+
+
+            self.config_loader.log_config()
+
+            # ⭐ UN SEUL FLAG: initialized
+            # Passe à True UNIQUEMENT quand jobs CRÉÉS (pas skipped)
+            self.initialized = False
+            
+            self.running = True
+            self.shutdown_mode = False
+
+            self.api_client = client.ApiClient()
+            self.core_v1 = client.CoreV1Api()
+            self.apps_v1 = client.AppsV1Api()
+            self.batch_v1 = client.BatchV1Api()
+            self.custom_api = client.CustomObjectsApi()
+            self.node_finder = NodeFinder(self.core_v1, self.custom_api)
+
+            self.template_manager = TemplateManager(self.operator_namespace)
+            self.resource_manager = ResourceManager(self.api_client)
+            self.job_manager = JobManager(
+                self.template_manager, self.resource_manager,
+                self.batch_v1, self.core_v1, self.operator_namespace
+            )
+
+            logger.info("=== VIP Controller v6.1.0 - Simplified ===")
+            logger.info(f"   Deployment: {self.deployment_name}")
+            logger.info(f"   SecureNamespace: {securenamespace_name}")
+
+
+        def reload_config_if_changed(self, context=""):
+            try:
+                old_version = self.config_loader.get_resource_version()
+                if self.config_loader.has_changed():
+                    logger.info(f"🔄 [{context}] Config change detected!")
+                    logger.info(f"   Old version: {old_version}")
+                    if self.config_loader.reload():
+                        new_version = self.config_loader.get_resource_version()
+                        logger.info(f"   New version: {new_version}")
+                        logger.info(f"✅ [{context}] Configuration reloaded")
+                        self.config_loader.log_config()
+                        return True
+                    else:
+                        logger.warning(f"⚠️  [{context}] Reload failed")
+                        return False
+                else:
+                    logger.debug(f"🔄 [{context}] Config unchanged (version: {old_version})")
+                    return False
+            except Exception as e:
+                logger.error(f"❌ Error reloading config: {e}")
+                return False
+
+        def run(self):
+            """
+            ⭐ v6.1.0 SIMPLIFIÉ: Plus de self.initialized = True ici !
+            """
+            signal.signal(signal.SIGTERM, lambda s, f: setattr(self, 'running', False))
+            signal.signal(signal.SIGINT, lambda s, f: setattr(self, 'running', False))
+
+            try:
+                self.reload_config_if_changed("STARTUP")
+                
+                # ⭐ Initialiser previous_spec
+                values = self.config_loader.get_values()
+                current_spec = values.get('spec', {})
+                if current_spec:
+                    import copy
+                    self.previous_spec = copy.deepcopy(current_spec)
+                    logger.info(f"✅ previous_spec initialized")
+                
+                templates = self.template_manager.load_templates_order()
+                if not templates:
+                    raise Exception("No templates")
+
+                # Première reconciliation
+                logger.info("🚀 Initial reconciliation...")
+                self.reconcile()
+                
+                if not self.running:
+                    return
+
+                # ⭐ SUPPRIMÉ: self.initialized = True
+                # Maintenant posé dans reconcile() quand jobs créés !
+                
+                # Démarrer watchers
+                import threading
+                logger.info("👀 Starting watchers...")
+                threading.Thread(target=self._watch_own_deployment, daemon=True).start()
+                threading.Thread(target=self._watch_endpoints, daemon=True).start()
+                threading.Thread(target=self._watch_service, daemon=True).start()
+                threading.Thread(target=self._watch_securenamespace, daemon=True).start()
+
+                # Réconciliation périodique
+                threading.Thread(target=self._periodic_reconcile, daemon=True).start()
+
+                with open('/tmp/healthy', 'w') as f:
+                    f.write('ok')
+
+                logger.info("✅ Controller started")
+
+                while self.running:
+                    time.sleep(1)
+                    if self.shutdown_mode:
+                        active_finalizers = self.resource_manager.get_active_finalizers()
+                        if not active_finalizers:
+                            logger.info("=" * 60)
+                            logger.info("✅ All finalizers removed - Safe to shutdown")
+                            logger.info("=" * 60)
+                            break
+                        else:
+                            logger.debug(f"⏳ {len(active_finalizers)} finalizer(s) remaining")
+
+            except Exception as e:
+                logger.error(f"❌ Fatal: {e}", exc_info=True)
+                sys.exit(1)
+            finally:
+                try:
+                    os.remove('/tmp/healthy')
+                except:
+                    pass
+                logger.info("👋 Controller exiting gracefully")
+
+        def _watch_securenamespace(self):
+            """
+            ⭐ v6.1.0 FINAL: Watcher avec previous_spec - Pattern propre
+            
+            CYCLE PROPRE:
+            1. Stocke previous_spec AVANT reconciliation
+            2. Déclenche reconciliation
+            3. Met à jour previous_spec = current_spec APRÈS reconciliation
+            
+            → egress_changed est True UNIQUEMENT lors du changement effectif
+            """
+            logger.info("👀 Watching SecureNamespace for spec changes...")
+            resource_version = self.config_loader.get_resource_version()
+            
+            # ⭐ Initialiser avec spec actuel (pas None)
+            values = self.config_loader.get_values()
+            import copy
+            previous_spec = copy.deepcopy(values.get('spec', {}))
+
+            while self.running:
+                try:
+                    w = watch.Watch()
+                    for event in w.stream(
+                        self.custom_api.list_cluster_custom_object,
+                        group=CRD_GROUP,
+                        version=CRD_VERSION,
+                        plural=CRD_PLURAL,
+                        field_selector=f"metadata.name={self.config_loader.securenamespace_name}",
+                        resource_version=resource_version,
+                        timeout_seconds=300
+                    ):
+                        event_type = event['type']
+                        obj = event['object']
+                        
+                        # Mettre à jour la resource version
+                        if hasattr(obj, 'get'):
+                            new_version = obj.get('metadata', {}).get('resourceVersion')
+                            if new_version:
+                                resource_version = new_version
+                        
+                        if event_type == 'MODIFIED':
+                            logger.info("🔔 SecureNamespace MODIFIED detected")
+                            
+                            # Extraire le spec actuel
+                            current_spec = obj.get('spec', {})
+                            
+                            # ⭐ ÉTAPE 1: Stocker previous_spec pour la reconciliation
+                            # (None au premier event, puis le spec de l'event précédent)
+                            self.previous_spec = previous_spec
+                            
+                            # ⭐ ÉTAPE 2: Recharger config et réconcilier
+                            if self.reload_config_if_changed("WATCH_SECURENAMESPACE"):
+                                logger.info("🔄 Triggering reconciliation...")
+                                self.reconcile()
+                            
+                            # ⭐ ÉTAPE 3: Mettre à jour previous_spec APRÈS reconciliation
+                            # Le current_spec devient le nouveau previous_spec
+                            if current_spec:
+                                import copy
+                                previous_spec = copy.deepcopy(current_spec)
+                                # ⭐ Sync avec l'instance pour les autres watchers
+                                self.previous_spec = previous_spec
+                            else:
+                                previous_spec = {}
+                                self.previous_spec = {}
+                        
+                        elif event_type == 'DELETED':
+                            logger.warning("⚠️  SecureNamespace DELETED")
+                            self.running = False
+                            break
+                
+                except Exception as e:
+                    logger.error(f"❌ Error watching SecureNamespace: {e}")
+                    # ⭐ Reset resourceVersion sur 410 pour repartir du début
+                    if '410' in str(e):
+                        resource_version = None
+                    time.sleep(10)
+
+        def _watch_own_deployment(self):
+            logger.info("👀 Watching own Deployment for deletion...")
+            while self.running:
+                try:
+                    deploy = self.apps_v1.read_namespaced_deployment(
+                        name=self.deployment_name,
+                        namespace=self.operator_namespace
+                    )
+                    if deploy.metadata.deletion_timestamp:
+                        if not self.shutdown_mode:
+                            logger.warning("=" * 60)
+                            logger.warning("⚠️  DELETION DETECTED - Entering shutdown mode")
+                            logger.warning("=" * 60)
+                            self.shutdown_mode = True
+                            self.reload_config_if_changed("SHUTDOWN_MODE")
+                            try:
+                                logger.info("🔄 Running shutdown reconciliation...")
+                                self.reconcile()
+                            except Exception as e:
+                                logger.error(f"Error during shutdown reconciliation: {e}")
+                    time.sleep(5)
+                except ApiException as e:
+                    if e.status == 404:
+                        logger.info("Deployment deleted")
+                        self.running = False
+                        break
+                    else:
+                        logger.warning(f"Error watching deployment: {e}")
+                        time.sleep(10)
+                except Exception as e:
+                    logger.error(f"Unexpected error in watch: {e}")
+                    if '410' in str(e):
+                        resource_version = None
+                    time.sleep(10)
+
+        def _watch_endpoints(self):
+            logger.info("👀 Watching Endpoints for changes...")
+            resource_version = None
+            while self.running:
+                try:
+                    self.reload_config_if_changed("WATCH_ENDPOINTS_INIT")
+                    values = self.config_loader.get_values()
+                    namespace_name = values.get('namespace_name')
+                    watched_service = values.get('spec', {}).get('ingress', {}).get('serviceName', 'lb-gateway')
+                    kwargs = {
+                        'namespace': namespace_name,
+                        'field_selector': f"metadata.name={watched_service}",
+                        'timeout_seconds': 300
+                    }
+                    if resource_version:
+                        kwargs['resource_version'] = resource_version
+                    w = watch.Watch()
+                    for event in w.stream(self.core_v1.list_namespaced_endpoints, **kwargs):
+                        event_type = event['type']
+                        obj = event['object']
+                        if hasattr(obj.metadata, 'resource_version'):
+                            resource_version = obj.metadata.resource_version
+                        if event_type == 'ADDED' and resource_version and self.initialized:
+                            continue
+                        if event_type in ['ADDED', 'MODIFIED']:
+                            logger.info(f"🔔 Endpoints {event_type}")
+                            self.reload_config_if_changed("WATCH_ENDPOINTS")
+                            self.reconcile()
+                except Exception as e:
+                    logger.error(f"❌ Endpoints watcher error: {e}")
+                    if '410' in str(e):
+                        resource_version = None
+                    time.sleep(10)
+
+        def _watch_service(self):
+            logger.info("👀 Watching Service for changes...")
+            resource_version = None
+            while self.running:
+                try:
+                    self.reload_config_if_changed("WATCH_SERVICE_INIT")
+                    values = self.config_loader.get_values()
+                    namespace_name = values.get('namespace_name')
+                    watched_service = values.get('spec', {}).get('ingress', {}).get('serviceName', 'lb-gateway')
+                    kwargs = {
+                        'namespace': namespace_name,
+                        'field_selector': f"metadata.name={watched_service}",
+                        'timeout_seconds': 300
+                    }
+                    if resource_version:
+                        kwargs['resource_version'] = resource_version
+                    w = watch.Watch()
+                    for event in w.stream(self.core_v1.list_namespaced_service, **kwargs):
+                        event_type = event['type']
+                        obj = event['object']
+                        if hasattr(obj.metadata, 'resource_version'):
+                            resource_version = obj.metadata.resource_version
+                        if event_type == 'ADDED' and resource_version and self.initialized:
+                            continue
+                        if event_type in ['ADDED', 'MODIFIED']:
+                            logger.info(f"🔔 Service {event_type}")
+                            self.reload_config_if_changed("WATCH_SERVICE")
+                            self.reconcile()
+                except Exception as e:
+                    logger.error(f"❌ Service watcher error: {e}")
+                    if '410' in str(e):
+                        resource_version = None
+                    time.sleep(10)
+
+        def _periodic_reconcile(self):
+            while self.running:
+                self.reload_config_if_changed("PERIODIC_CHECK")
+                values = self.config_loader.get_values()
+                interval = values.get('spec', {}).get('egressController', {}).get('reconcileIntervalSeconds', 30)
+                time.sleep(interval)
+                if not self.running:
+                    break
+                try:
+                    logger.info("🔄 Periodic reconciliation")
+                    self.reload_config_if_changed("PERIODIC_RECONCILE")
+                    self.reconcile()
+                except Exception as e:
+                    logger.error(f"Reconciliation error: {e}")
+
+        def reconcile(self):
+            # Si un reconcile tourne déjà, marquer pending et sortir
+            if not self._reconcile_lock.acquire(blocking=False):
+                logger.info("⏳ Reconcile already running, marking pending...")
+                self._reconcile_pending = True
+                return
+
+            try:
+                self._do_reconcile()
+                
+                # Si un reconcile était en attente, le jouer maintenant
+                while self._reconcile_pending:
+                    self._reconcile_pending = False
+                    logger.info("🔄 Running pending reconcile...")
+                    self._do_reconcile()
+            finally:
+                self._reconcile_lock.release()
+
+
+        def _do_reconcile(self):
+            """
+            VIP Controller v6.1.1 - previous_vip + previous_node
+            """
+            try:
+                config_changed = self.reload_config_if_changed("RECONCILE_START")
+                if config_changed:
+                    logger.info("📋 Working with FRESH configuration")
+
+                if self.shutdown_mode:
+                    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    logger.info("🔄 SHUTDOWN MODE - Template-based reconciliation")
+                else:
+                    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    logger.info("🔄 RECONCILIATION")
+                    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+                values = self.config_loader.get_values()
+                namespace_name = values.get('namespace_name')
+                spec = values.get('spec', {})
+                watched_service = spec.get('ingress', {}).get('serviceName', 'lb-gateway')
+
+                # ⭐ ÉTAPE 1: Capturer previous AVANT tout
+                previous_vip = self.previous_vip
+                previous_node = self.previous_node
+
+                # ⭐ ÉTAPE 2: Récupérer VIP actuelle
+                vip = self._get_vip_from_service(namespace_name, watched_service)
+
+                # ⭐ ÉTAPE 3: Récupérer last_vip/last_node depuis labels namespace
+                last_vip, last_node = self._get_last_state_from_namespace(namespace_name)
+
+                # ═══════════════════════════════════════════════════════════
+                # CAS 1: Pas de VIP
+                # ═══════════════════════════════════════════════════════════
+                if not vip:
+                    logger.info("⏳ No VIP yet")
+
+                    template_values = self.build_template_values(
+                        node_name=None,
+                        vip=None,
+                        last_vip=last_vip,
+                        last_node=last_node,
+                        previous_vip=previous_vip,
+                        previous_node=previous_node,
+                    )
+
+                    self.job_manager.execute_all_jobs(template_values)
+                    self.apply_templates(template_values)
+
+                    self.previous_vip = None
+                    self.previous_node = None
+                    self.previous_spec = copy.deepcopy(spec)
+                    return
+
+
+                # ═══════════════════════════════════════════════════════════
+                # CAS 2: VIP existe
+                # ═══════════════════════════════════════════════════════════
+                logger.info(f"✅ VIP:          {vip}")
+                logger.info(f"✅ previous_vip: {previous_vip}")
+                logger.info(f"✅ last_vip:     {last_vip}")
+                logger.info(f"✅ initialized:  {self.initialized}")
+
+                node_name = self.node_finder.find_node_hosting_vip(values)
+                logger.info(f"✅ Node:          {node_name}")
+                logger.info(f"✅ previous_node: {previous_node}")
+                logger.info(f"✅ last_node:     {last_node}")
+
+                # ⭐ ÉTAPE 4: Build values avec TOUTES les variables d'état
+                template_values = self.build_template_values(
+                    node_name=node_name,
+                    vip=vip,
+                    last_vip=last_vip,
+                    last_node=last_node,
+                    previous_vip=previous_vip,
+                    previous_node=previous_node,
+                )
+
+
+                self._log_template_values_if_debug(template_values)
+
+                # ⭐ ÉTAPE 5: Execute jobs
+                result = self.job_manager.execute_all_jobs(template_values)
+
+                if len(result['created']) > 0:
+                    if not self.initialized:
+                        logger.info("✅ Jobs created, initialized = True")
+                    self.initialized = True
+
+                # ⭐ ÉTAPE 6: Update labels namespace APRÈS jobs
+                if vip and node_name:
+                    self._update_namespace_labels(namespace_name, watched_service, node_name, vip)
+
+                # ⭐ ÉTAPE 7: Apply templates
+                self.apply_templates(template_values)
+
+                # ⭐ ÉTAPE 8: Mettre à jour previous APRÈS tout
+                self.previous_vip = vip
+                self.previous_node = node_name
+                self.previous_spec = copy.deepcopy(spec)  # ⭐ ajout
+
+                if self.shutdown_mode:
+                    active = self.resource_manager.get_active_finalizers()
+                    logger.info(f"🔒 Finalizers remaining: {len(active)}")
+                else:
+                    logger.info("🎉 Reconciliation complete")
+
+            except Exception as e:
+                logger.error(f"❌ Error: {e}", exc_info=True)
+                raise
+
+        def _log_template_values_if_debug(self, values):
+            """⭐ Affiche les values UNE SEULE FOIS si DEBUG_VALUES=true"""
+            debug_enabled = os.getenv('DEBUG_VALUES', 'false').lower() == 'true'
+            if not debug_enabled:
+                return
+            
+            logger.info("=" * 70)
+            logger.info("🐛 DEBUG: Template Values for This Reconciliation")
+            logger.info("=" * 70)
+            
+            for key in sorted(values.keys()):
+                value = values[key]
+                if isinstance(value, dict):
+                    logger.info(f"   {key}:")
+                    items = list(value.items())
+                    for subkey, subval in items[:5]:
+                        logger.info(f"      {subkey}: {subval}")
+                    if len(value) > 5:
+                        logger.info(f"      ... and {len(value) - 5} more keys")
+                elif isinstance(value, list):
+                    logger.info(f"   {key}: [")
+                    for item in value[:5]:
+                        logger.info(f"      {item}")
+                    if len(value) > 5:
+                        logger.info(f"      ... and {len(value) - 5} more items")
+                    logger.info(f"   ]")
+                elif isinstance(value, str):
+                    if len(value) > 100:
+                        logger.info(f"   {key}: '{value[:100]}...'")
+                    else:
+                        logger.info(f"   {key}: '{value}'")
+                else:
+                    logger.info(f"   {key}: {value}")
+            
+            logger.info("=" * 70)
+            logger.info("")
+
+        def _get_last_state_from_namespace(self, namespace_name):
+            """
+            ⭐ v6.0.5: Récupère l'état précédent depuis les labels du namespace
+            
+            Returns:
+                tuple: (last_vip, last_node)
+            """
+            try:
+                ns = self.core_v1.read_namespace(name=namespace_name)
+                labels = ns.metadata.labels or {}
+                
+                last_vip = labels.get(LABEL_VIP, '')
+                last_node = labels.get(LABEL_NODE_NAME, '')
+                
+                return last_vip, last_node
+                
+            except ApiException as e:
+                if e.status == 404:
+                    # Namespace pas encore créé
+                    return '', ''
+                else:
+                    logger.warning(f"⚠️  Error reading namespace labels: {e}")
+                    return '', ''
+
+        def build_template_values(self, node_name, vip, last_vip=None, last_node=None,
+                           previous_vip=None, previous_node=None):
+            timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            values = self.config_loader.get_values()
+            spec = values.get('spec', {})
+            namespace_name = values.get('namespace_name')
+
+            is_first_run = (not last_vip or last_vip == '' or last_vip == 'None')
+            # ⭐ Tous les changements calculés ici
+            vip_changed = (vip != previous_vip)
+            node_changed = (node_name != previous_node)
+
+            current_egress = spec.get('egressController', {}).get('enabled', False)
+            previous_egress = self.previous_spec.get('egressController', {}).get('enabled', False)
+            egress_changed = (current_egress != previous_egress)
+
+            current_ingress = spec.get('ingress', {}).get('enabled', False)
+            previous_ingress = self.previous_spec.get('ingress', {}).get('enabled', False)
+            ingress_changed = (current_ingress != previous_ingress)
+
+            return {
+                # ═══════════════════════════════════════
+                # Identité
+                # ═══════════════════════════════════════
+                'securenamespace_name': values.get('securenamespace_name'),
+                'namespace_name':       namespace_name,
+                'solution':             values.get('solution'),
+                'environment':          values.get('environment'),
+                'operator_namespace':   self.operator_namespace,
+
+                # ═══════════════════════════════════════
+                # Spec
+                # ═══════════════════════════════════════
+                'spec':                 spec,
+                'previous_spec':        self.previous_spec,
+
+                # ═══════════════════════════════════════
+                # VIP / Node - état courant
+                # ═══════════════════════════════════════
+                'egress_ip':            vip,
+                'node_name':            node_name,
+
+                # ═══════════════════════════════════════
+                # VIP / Node - état précédent (cycle N-1, peut être None)
+                # ═══════════════════════════════════════
+                'previous_vip':         previous_vip,
+                'previous_node':        previous_node,
+
+                # ═══════════════════════════════════════
+                # VIP / Node - dernière valeur connue (jamais None après premier run)
+                # ═══════════════════════════════════════
+                'last_vip':             last_vip,
+                'last_node':            last_node,
+
+                # ═══════════════════════════════════════
+                # Flags de changement
+                # ═══════════════════════════════════════
+                'vip_changed':          vip_changed,
+                'node_changed':         node_changed,
+                'egress_changed':       egress_changed,
+                'ingress_changed':      ingress_changed,
+
+                # ═══════════════════════════════════════
+                # Flags d'état
+                # ═══════════════════════════════════════
+                'is_first_run':         is_first_run,
+                'initialized':          self.initialized,
+                'shutdown_mode':        self.shutdown_mode,
+
+                # ═══════════════════════════════════════
+                # Infos réseau
+                # ═══════════════════════════════════════
+                'eligible_nodes':       self.node_finder.get_eligible_nodes(values),
+                'l2_policy_name':       values.get('l2_policy_name'),
+                'egress_policy_name':   values.get('egress_policy_name'),
+                'domain':               values.get('domain'),
+
+                # ═══════════════════════════════════════
+                # Divers
+                # ═══════════════════════════════════════
+                'timestamp':            timestamp,
+            }
+
+        def apply_templates(self, values):
+            """⭐ v6.0.3: Application avec icônes et résumé détaillé"""
+            logger.info("📄 Applying templates...")
+            templates_order = self.template_manager.load_templates_order()
+            if not templates_order:
+                logger.warning("⚠️  No templates to apply")
+                return {'applied': [], 'deleted': [], 'failed': []}
+            
+            templates_content = self.template_manager.load_templates(templates_order)
+            results = {'applied': [], 'deleted': [], 'skipped': [], 'failed': []}
+
+            for i, template_name in enumerate(templates_order, 1):
+                try:
+                    if template_name not in templates_content:
+                        logger.warning(f"   [{i}/{len(templates_order)}] ⚠️  {template_name}: Not loaded")
+                        results['failed'].append({'template': template_name, 'reason': 'Template not found'})
+                        continue
+                    
+                    docs = self.template_manager.render_to_documents(template_name, values)
+                    
+                    if not docs:
+                        logger.info(f"   [{i}/{len(templates_order)}] ⏭️  {template_name}")
+                        results['skipped'].append(template_name)
+                        continue
+                    
+                    # Déterminer l'icône
+                    actions = [doc.get('_action', 'apply') for doc in docs if doc]
+                    delete_count = actions.count('delete')
+                    apply_count = len(actions) - delete_count
+                    
+                    if delete_count > 0 and apply_count == 0:
+                        icon = "🗑️"
+                    elif apply_count > 0 and delete_count == 0:
+                        icon = "✅"
+                    else:
+                        icon = "🔀"
+                    
+                    logger.info(f"   [{i}/{len(templates_order)}] {icon} {template_name}")
+                    
+                    for doc_idx, doc in enumerate(docs, 1):
+                        if not doc:
+                            continue
+                        action = doc.get('_action', 'apply')
+                        kind = doc.get('kind')
+                        name = doc.get('metadata', {}).get('name')
+                        namespace = doc.get('metadata', {}).get('namespace', '')
+
+                        try:
+                            self.resource_manager.apply_or_delete(doc, template_name)
+                            resource_key = f"{kind}/{name}"
+                            if namespace:
+                                resource_key = f"{namespace}/{resource_key}"
+                            if action == 'delete':
+                                results['deleted'].append({'template': template_name, 'resource': resource_key})
+                                logger.debug(f"      [{doc_idx}] 🗑️  {resource_key}")
+                            else:
+                                results['applied'].append({'template': template_name, 'resource': resource_key})
+                                logger.debug(f"      [{doc_idx}] ✅ {resource_key}")
+                        except Exception as e:
+                            logger.error(f"      [{doc_idx}] ❌ {e}")
+                            results['failed'].append({
+                                'template': template_name,
+                                'resource': f"{kind}/{name}",
+                                'error': str(e)
+                            })
+                except Exception as e:
+                    logger.error(f"   [{i}/{len(templates_order)}] ❌ {template_name}: {e}")
+                    results['failed'].append({'template': template_name, 'error': str(e)})
+
+            # Résumé
+            applied_count = len(results['applied'])
+            deleted_count = len(results['deleted'])
+            skipped_count = len(results['skipped'])
+            failed_count = len(results['failed'])
+            
+            logger.info(f"✅ {applied_count} applied, {deleted_count} deleted, {skipped_count} skipped")
+            
+            if failed_count > 0:
+                logger.warning(f"⚠️  {failed_count} failed:")
+                for failure in results['failed'][:5]:
+                    if 'resource' in failure:
+                        logger.warning(f"   - {failure['template']}/{failure['resource']}: {failure.get('error', 'unknown')}")
+                    else:
+                        logger.warning(f"   - {failure['template']}: {failure.get('error', 'unknown')}")
+            
+            # Statistiques seulement en DEBUG
+            if logger.isEnabledFor(logging.DEBUG):
+                if hasattr(self.template_manager, 'log_stats'):
+                    self.template_manager.log_stats()
+            
+            return results
+
+        def _get_vip_from_service(self, namespace_name, service_name):
+            """Récupère la VIP depuis le Service LoadBalancer"""
+            try:
+                svc = self.core_v1.read_namespaced_service(
+                    name=service_name, namespace=namespace_name
+                )
+                if svc.spec.load_balancer_ip:
+                    return svc.spec.load_balancer_ip
+                if svc.status.load_balancer and svc.status.load_balancer.ingress:
+                    for ingress in svc.status.load_balancer.ingress:
+                        if ingress.ip:
+                            return ingress.ip
+                if svc.metadata.annotations:
+                    vip = svc.metadata.annotations.get("io.cilium/lb-ipam-ips")
+                    if vip:
+                        return vip
+                return None
+            except ApiException as e:
+                if e.status == 404:
+                    return None
+                raise
+
+        def _update_namespace_labels(self, namespace_name, watched_service, node_name, vip):
+            """Met à jour les labels du namespace"""
+            try:
+                ns = self.core_v1.read_namespace(name=namespace_name)
+                if not ns.metadata.labels:
+                    ns.metadata.labels = {}
+                ns.metadata.labels[LABEL_NODE_NAME] = node_name
+                ns.metadata.labels[LABEL_VIP] = vip
+                ns.metadata.labels[LABEL_SERVICE_NAME] = watched_service
+                ns.metadata.labels[LABEL_LAST_UPDATE] = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%SZ")
+                self.core_v1.patch_namespace(name=namespace_name, body=ns)
+            except Exception as e:
+                logger.warning(f"⚠️  Error updating labels: {e}")
+
+
+    if __name__ == "__main__":
+        controller = VIPController()
+        controller.run()        
+  job_manager.py: |
+    #!/usr/bin/env python3 
+    """ 
+    Job Manager v6.0.2 - Logs Détaillés
+
+    CHANGEMENTS v6.0.2: 
+    - ⭐ Log détaillé pour chaque job traité 
+    - ⭐ Affichage des jobs créés/skippés avec raison 
+    - ⭐ Statistiques en fin d'exécution 
+    """
+    import time 
+    import logging 
+    from kubernetes import client 
+    from kubernetes.client.rest import ApiException
+
+    logger = logging.getLogger(__name__)
+
+
+    class JobManager:
+      """Gestion automatique des Jobs - Template-Centric Pure"""
+
+      def __init__(self, template_manager, resource_manager, batch_v1, core_v1, namespace):
+          self.template_manager = template_manager
+          self.resource_manager = resource_manager
+          self.batch_v1 = batch_v1
+          self.core_v1 = core_v1
+          self.namespace = namespace
+
+      def execute_all_jobs(self, values, wait=True, timeout=60):
+          """
+          ⭐ v6.0.3: Exécute les templates de jobs - ZÉRO logique métier
+
+          Le code ne décide RIEN.
+          Chaque template Jinja2 décide s'il produit des Jobs selon ses conditions.
+          """
+          job_templates = self.template_manager.load_jobs_order()
+
+          if not job_templates:
+              logger.debug("📋 No job templates defined")
+              return {'created': [], 'skipped': [], 'failed': []}
+
+          logger.info(f"📋 Processing {len(job_templates)} job template(s)...")
+
+          results = {
+              'created': [],
+              'skipped': [],
+              'failed': []
+          }
+
+          job_templates_content = self.template_manager.load_templates(job_templates)
+
+          # ⭐ Traiter chaque template de job EXACTEMENT comme les templates Cilium
+          for i, template_name in enumerate(job_templates, 1):
+              try:
+                  if template_name not in job_templates_content:
+                      logger.warning(f"   [{i}/{len(job_templates)}] ⚠️  {template_name}: Not loaded")
+                      results['failed'].append({
+                          'template': template_name,
+                          'reason': 'Template not found'
+                      })
+                      continue
+
+                  # ⭐ Rendre le template - il décide SEUL s'il produit des Jobs
+                  docs = self.template_manager.render_to_documents(template_name, values)
+
+                  # ⭐ Si le template ne produit rien (conditions Jinja2 non remplies)
+                  if not docs or all(not doc for doc in docs):
+                      logger.info(f"   [{i}/{len(job_templates)}] ⏭️  {template_name}")
+                      results['skipped'].append(template_name)
+                      continue
+
+                  # ⭐ Compter les Jobs produits
+                  job_count = sum(1 for d in docs if d and d.get('kind') == 'Job')
+
+                  if job_count == 0:
+                      logger.info(f"   [{i}/{len(job_templates)}] ⏭️  {template_name}")
+                      results['skipped'].append(template_name)
+                      continue
+
+                  # ⭐ Le template a produit des Jobs
+                  logger.info(f"   [{i}/{len(job_templates)}] 🚀 {template_name}")
+
+                  # Traiter chaque Job produit
+                  job_idx = 0
+                  for doc in docs:
+                      if not doc or doc.get('kind') != 'Job':
+                          continue
+
+                      job_idx += 1
+                      job_name = doc.get('metadata', {}).get('name')
+
+                      if not job_name:
+                          logger.error(f"      ❌ Job without name")
+                          results['failed'].append({
+                              'template': template_name,
+                              'reason': 'No job name'
+                          })
+                          continue
+
+                      # Supprimer l'ancien job
+                      try:
+                          self.batch_v1.delete_namespaced_job(
+                              name=job_name,
+                              namespace=self.namespace,
+                              propagation_policy='Background'
+                          )
+                          time.sleep(0.2)
+                      except ApiException as e:
+                          if e.status != 404:
+                              logger.debug(f"      Cleaned old job")
+
+                      # Créer le job
+                      self.resource_manager.apply_or_delete(doc, template_name=None)
+
+                      # ⭐ Log simple
+                      logger.debug(f"      [{job_idx}] {job_name}")
+                      results['created'].append(job_name)
+
+              except Exception as e:
+                  logger.error(f"   [{i}/{len(job_templates)}] ❌ {template_name}: {e}")
+                  import traceback
+                  logger.error(traceback.format_exc())
+                  results['failed'].append({
+                      'template': template_name,
+                      'reason': str(e)
+                  })
+
+          # ⭐ Résumé simple
+          created_count = len(results['created'])
+          skipped_count = len(results['skipped'])
+          failed_count = len(results['failed'])
+
+          if created_count > 0 or failed_count > 0:
+              logger.info(f"✅ Jobs: {created_count} created, {skipped_count} skipped, {failed_count} failed")
+          else:
+              logger.info(f"✅ Jobs: {created_count} created, {skipped_count} skipped")
+
+          # ⭐ Détail des jobs créés (niveau INFO)
+          if created_count > 0:
+              logger.info(f"   Created jobs:")
+              for job_name in results['created']:
+                  logger.info(f"      - {job_name}")
+
+          # ⭐ Erreurs
+          if failed_count > 0:
+              logger.warning(f"   Failed:")
+              for failure in results['failed']:
+                  logger.warning(f"      - {failure.get('template', 'unknown')}: {failure.get('reason', 'unknown')}")
+
+          # Attendre complétion
+          if wait and results['created']:
+              self.wait_for_jobs(results['created'], timeout=timeout)
+
+          return results
+
+      def wait_for_jobs(self, job_names, timeout=60):
+          """Attend la complétion des Jobs"""
+          if not job_names:
+              return
+
+          logger.info(f"⏳ Waiting for {len(job_names)} job(s)...")
+          start_time = time.time()
+          pending_jobs = set(job_names)
+
+          while pending_jobs and (time.time() - start_time) < timeout:
+              completed = set()
+              for job_name in list(pending_jobs):
+                  try:
+                      status = self.batch_v1.read_namespaced_job_status(
+                          name=job_name, namespace=self.namespace
+                      )
+                      if (status.status.succeeded or 0) > 0:
+                          logger.info(f"   ✅ {job_name}")
+                          completed.add(job_name)
+                      elif (status.status.failed or 0) > 0:
+                          logger.warning(f"   ❌ {job_name}")
+                          completed.add(job_name)
+                  except ApiException as e:
+                      if e.status == 404:
+                          completed.add(job_name)
+
+              pending_jobs -= completed
+              if pending_jobs:
+                  time.sleep(1)
+
+          if pending_jobs:
+              logger.warning(f"⚠️  Timeout: {len(pending_jobs)} job(s) not completed")
+          else:
+              elapsed = int(time.time() - start_time)
+              logger.info(f"✅ All jobs completed in {elapsed}s")
+  node_finder.py: |
+    #!/usr/bin/env python3
+    """
+    Node Finder - Détection du nœud hébergeant la VIP
+    Supporte nodeSelector pour filtrer les nœuds éligibles
+    """
+    import logging
+    from kubernetes.client.rest import ApiException
+
+    logger = logging.getLogger(__name__)
+
+
+    class NodeFinder:
+        """Trouve le nœud hébergeant la VIP"""
+
+        def __init__(self, core_v1, custom_api):
+            self.core_v1 = core_v1
+            self.custom_api = custom_api
+
+        def get_eligible_nodes(self, values):
+            spec = values.get('spec', {})
+            node_selector = spec.get('ingress', {}).get('controller', {}).get('nodeSelector', {})
+            label_key = node_selector.get('label', '')
+            label_value = node_selector.get('value', '')
+            try:
+                if label_key:
+                    label_selector = f"{label_key}={label_value}"
+                    nodes = self.core_v1.list_node(label_selector=label_selector)
+                else:
+                    nodes = self.core_v1.list_node()
+                eligible = [
+                    n.metadata.name for n in nodes.items
+                    if self._is_node_ready(n)
+                ]
+                eligible.sort()
+                return eligible
+            except Exception as e:
+                logger.error(f"❌ Error getting eligible nodes: {e}")
+                return []
+
+        def find_node_hosting_vip(self, values):
+            eligible_nodes = self.get_eligible_nodes(values)
+            if not eligible_nodes:
+                raise ValueError("No eligible nodes available")
+
+            namespace_name = values.get('namespace_name')
+            spec = values.get('spec', {})
+            watched_service = spec.get('ingress', {}).get('serviceName', 'lb-gateway')
+            l2_policy_name = values.get('l2_policy_name')
+
+            for method_name, method in [
+                ('endpoints', lambda: self._find_via_endpoints(namespace_name, watched_service, eligible_nodes)),
+                ('annotations', lambda: self._find_via_service_annotations(namespace_name, watched_service, eligible_nodes)),
+                ('l2_policy', lambda: self._find_via_l2_policy(l2_policy_name, eligible_nodes)),
+                ('deterministic', lambda: self._select_deterministic_node(namespace_name, eligible_nodes)),
+            ]:
+                try:
+                    node = method()
+                    if node:
+                        logger.debug(f"Node found via {method_name}: {node}")
+                        return node
+                except Exception as e:
+                    logger.debug(f"{method_name} method failed: {e}")
+
+            raise ValueError("Unable to determine node for VIP")
+
+        def _find_via_endpoints(self, namespace_name, watched_service, eligible_nodes):
+            ep = self.core_v1.read_namespaced_endpoints(
+                name=watched_service, namespace=namespace_name
+            )
+            pod_ips = []
+            if ep.subsets:
+                for subset in ep.subsets:
+                    if subset.addresses:
+                        for addr in subset.addresses:
+                            if addr.target_ref and addr.target_ref.kind == "Pod":
+                                pod_ips.append(addr.ip)
+            if not pod_ips:
+                return None
+            pods = self.core_v1.list_namespaced_pod(namespace=namespace_name)
+            for pod in pods.items:
+                if pod.status.pod_ip in pod_ips and pod.spec.node_name:
+                    node_name = pod.spec.node_name
+                    if node_name in eligible_nodes:
+                        return node_name
+            return None
+
+        def _find_via_service_annotations(self, namespace_name, watched_service, eligible_nodes):
+            svc = self.core_v1.read_namespaced_service(
+                name=watched_service, namespace=namespace_name
+            )
+            if svc.metadata.annotations:
+                node_name = svc.metadata.annotations.get("io.cilium/l2-announcement-node")
+                if node_name and node_name in eligible_nodes:
+                    return node_name
+            return None
+
+        def _find_via_l2_policy(self, l2_policy_name, eligible_nodes):
+            try:
+                policy = self.custom_api.get_cluster_custom_object(
+                    group="cilium.io", version="v2alpha1",
+                    plural="ciliuml2announcementpolicies", name=l2_policy_name
+                )
+                node_name = policy.get('spec', {}).get('nodeSelector', {}).get(
+                    'matchLabels', {}
+                ).get('kubernetes.io/hostname')
+                if node_name and node_name in eligible_nodes:
+                    return node_name
+            except ApiException:
+                pass
+            return None
+
+        def _select_deterministic_node(self, namespace_name, eligible_nodes):
+            if not eligible_nodes:
+                raise ValueError("No eligible nodes available")
+            try:
+                ns = self.core_v1.read_namespace(name=namespace_name)
+                recorded = (ns.metadata.labels or {}).get('egress-vip.io/node')
+                if recorded and recorded in eligible_nodes:
+                    logger.info(f"♻️  Reusing recorded node: {recorded}")
+                    return recorded
+            except Exception:
+                pass
+            return eligible_nodes[0]
+
+        def _is_node_ready(self, node):
+            if not node.status or not node.status.conditions:
+                return False
+            for cond in node.status.conditions:
+                if cond.type == "Ready" and cond.status == "True":
+                    return True
+            return False
+  requirements.txt: |
+    kubernetes==29.0.0
+    pyyaml==6.0.1
+    jinja2==3.1.2
+  resource_manager.py: |
+    #!/usr/bin/env python3
+    """
+    Resource Manager v5.0.6 - Server-Side Apply + Finalizers
+    """
+    import os
+    import json
+    import logging
+    import re
+    import time
+    import kubernetes
+    import kubernetes.dynamic
+    from kubernetes import client
+    from kubernetes.client.rest import ApiException
+
+    # CRD piloté par le moteur générique (voir values.yaml::crd)
+    CRD_GROUP = os.getenv('CRD_GROUP', 'secure-ns.example.com')
+
+    logger = logging.getLogger(__name__)
+
+    FIELD_MANAGER = 'vip-controller'
+    FINALIZER_PREFIX = f'vip.{CRD_GROUP}/'
+    MAX_FINALIZER_LEN = 63
+
+    def template_to_finalizer(template_name):
+        """Convertit un nom de template en nom de finalizer valide"""
+        base = re.sub(r'\.(yaml|yml)$', '', template_name)
+        clean = re.sub(r'[^a-z0-9-]', '-', base.lower())
+        clean = re.sub(r'-+', '-', clean).strip('-')
+        max_name_len = MAX_FINALIZER_LEN - len(FINALIZER_PREFIX)
+        clean = clean[:max_name_len]
+        return f"{FINALIZER_PREFIX}{clean}"
+
+    class ResourceManager:
+        def __init__(self, api_client):
+            self.api_client = api_client
+            self.dyn_client = kubernetes.dynamic.DynamicClient(api_client)
+            self.apps_v1 = client.AppsV1Api(api_client)
+            self.deployment_name = os.getenv('DEPLOYMENT_NAME')
+            self.deployment_namespace = os.getenv('NAMESPACE', 'namespace-operator')
+
+            if self.deployment_name:
+                logger.info(f"🔒 Finalizer target: Deployment/{self.deployment_name}")
+
+            self._api_resource_cache = {}
+
+        def _get_api_resource(self, api_version, kind):
+            cache_key = f"{api_version}/{kind}"
+            if cache_key not in self._api_resource_cache:
+                self._api_resource_cache[cache_key] = self.dyn_client.resources.get(
+                    api_version=api_version, kind=kind
+                )
+            return self._api_resource_cache[cache_key]
+
+        def _get_deployment_finalizers(self):
+            if not self.deployment_name:
+                return []
+            try:
+                deploy = self.apps_v1.read_namespaced_deployment(
+                    name=self.deployment_name,
+                    namespace=self.deployment_namespace
+                )
+                return list(deploy.metadata.finalizers or [])
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"⚠️  Error reading finalizers: {e}")
+                return []
+
+        def _patch_deployment_json_patch(self, patch_operations):
+            """Applique JSON Patch au Deployment avec auth token"""
+            if not self.deployment_name:
+                return False
+
+            try:
+                path = (
+                    f"/apis/apps/v1/namespaces/{self.deployment_namespace}"
+                    f"/deployments/{self.deployment_name}"
+                )
+
+                auth_token = None
+                if hasattr(self.api_client, 'configuration'):
+                    config = self.api_client.configuration
+                    if hasattr(config, 'api_key') and config.api_key:
+                        auth_token = config.api_key.get('authorization')
+
+                headers = {
+                    'Content-Type': 'application/json-patch+json',
+                    'Accept': 'application/json'
+                }
+
+                if auth_token:
+                    headers['Authorization'] = auth_token
+
+                response = self.api_client.call_api(
+                    path,
+                    'PATCH',
+                    header_params=headers,
+                    body=patch_operations,
+                    response_type='object',
+                    _return_http_data_only=True
+                )
+
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ JSON Patch failed: {e}")
+                return False
+
+        def add_finalizer(self, template_name):
+            """Ajoute un finalizer avec JSON Patch"""
+            if not self.deployment_name:
+                return
+
+            finalizer = template_to_finalizer(template_name)
+            current = self._get_deployment_finalizers()
+
+            if finalizer in current:
+                return
+
+            logger.debug(f"🔒 Adding finalizer: {finalizer}")
+
+            if not current:
+                patch = [{"op": "add", "path": "/metadata/finalizers", "value": [finalizer]}]
+            else:
+                patch = [{"op": "add", "path": "/metadata/finalizers/-", "value": finalizer}]
+
+            if self._patch_deployment_json_patch(patch):
+                time.sleep(0.1)
+
+        def remove_finalizer(self, template_name):
+            """Retire un finalizer avec JSON Patch"""
+            if not self.deployment_name:
+                return
+
+            finalizer = template_to_finalizer(template_name)
+            current = self._get_deployment_finalizers()
+
+            logger.debug(f"🔓 Removing finalizer: {finalizer}")
+
+            if finalizer not in current:
+                return
+
+            try:
+                index = current.index(finalizer)
+            except ValueError:
+                return
+
+            if len(current) == 1:
+                patch = [{"op": "remove", "path": "/metadata/finalizers"}]
+            else:
+                patch = [{"op": "remove", "path": f"/metadata/finalizers/{index}"}]
+
+            if self._patch_deployment_json_patch(patch):
+                time.sleep(0.1)
+
+        def get_active_finalizers(self):
+            current = self._get_deployment_finalizers()
+            return [f for f in current if f.startswith(FINALIZER_PREFIX)]
+
+        def apply_resource(self, resource, template_name=None):
+            kind = resource.get('kind')
+            api_version = resource.get('apiVersion', 'v1')
+            metadata = resource.get('metadata', {})
+            name = metadata.get('name')
+            namespace = metadata.get('namespace')
+
+            if not kind or not name:
+                return False
+
+            no_finalizer = resource.get('_no_finalizer', False)
+            resource_copy = {k: v for k, v in resource.items()
+                            if k not in ('_action', '_template', '_no_finalizer')}
+
+            try:
+                api_resource = self._get_api_resource(api_version, kind)
+
+                if api_resource.namespaced:
+                    api_resource.server_side_apply(
+                        body=resource_copy, name=name, namespace=namespace,
+                        field_manager=FIELD_MANAGER, force_conflicts=True
+                    )
+                else:
+                    api_resource.server_side_apply(
+                        body=resource_copy, name=name,
+                        field_manager=FIELD_MANAGER, force_conflicts=True
+                    )
+
+                if template_name and not no_finalizer:
+                    self.add_finalizer(template_name)
+
+                return True
+
+            except Exception as e:
+                logger.error(f"Error applying {kind}/{name}: {e}")
+                raise
+
+        def delete_resource(self, resource, template_name=None):
+            """Supprime ressource puis retire finalizer"""
+            kind = resource.get('kind')
+            api_version = resource.get('apiVersion', 'v1')
+            metadata = resource.get('metadata', {})
+            name = metadata.get('name')
+            namespace = metadata.get('namespace')
+
+            if not kind or not name:
+                return False
+
+            try:
+                api_resource = self._get_api_resource(api_version, kind)
+
+                try:
+                    if api_resource.namespaced:
+                        api_resource.delete(name=name, namespace=namespace)
+                    else:
+                        api_resource.delete(name=name)
+
+                    if template_name:
+                        self.remove_finalizer(template_name)
+
+                except kubernetes.dynamic.exceptions.NotFoundError:
+                    if template_name:
+                        self.remove_finalizer(template_name)
+
+                return True
+
+            except Exception as e:
+                logger.error(f"Error deleting {kind}/{name}: {e}")
+                raise
+
+        def apply_or_delete(self, resource, template_name=None):
+            action = resource.get('_action', 'apply')
+            kind = resource.get('kind')
+            name = resource.get('metadata', {}).get('name')
+
+            if action == 'delete':
+                return self.delete_resource(resource, template_name)
+            else:
+                return self.apply_resource(resource, template_name)
+  template_manager.py: |
+    #!/usr/bin/env python3
+    """
+    Template Manager v6.0.5 - Pas de Log des Values
+
+    CHANGEMENTS v6.0.5:
+    - ⭐ SUPPRESSION de l'affichage des values dans render()
+    - ⭐ Le controller affiche les values UNE FOIS au début
+    - ⭐ render() se concentre sur son job: rendre les templates
+
+    """
+    import os
+    import logging
+    import yaml
+    import json
+    from jinja2 import Environment, BaseLoader
+    from kubernetes import client
+    from kubernetes.client.rest import ApiException
+
+    logger = logging.getLogger(__name__)
+
+    TEMPLATES_CONFIGMAP_ORDER = os.getenv('TEMPLATES_CONFIGMAP_ORDER', 'vip-controller-templates-order')
+    TEMPLATES_CONFIGMAP_ORDER_CUSTOM = os.getenv('TEMPLATES_CONFIGMAP_ORDER_CUSTOM', 'vip-controller-templates-order-custom')
+
+    # ⭐ NE PAS lire DEBUG_VALUES ici !
+    # DEBUG_VALUES = os.getenv('DEBUG_VALUES', 'false').lower() == 'true'  ← FAUX
+
+
+    class TemplateManager:
+        """Gestion des templates Jinja2 avec debug VRAIMENT dynamique"""
+
+        def __init__(self, namespace):
+            self.namespace = namespace
+            self.templates_cache = {}
+            self.configmaps_cache = {}
+            self.order_config_cache = None
+            
+            self.stats = {
+                'api_calls': 0,
+                'cache_hits': 0,
+                'templates_rendered': 0
+            }
+            
+            self.jinja_env = Environment(
+                loader=BaseLoader(),
+                variable_start_string='[{',
+                variable_end_string='}]',
+                block_start_string='[%',
+                block_end_string='%]',
+                comment_start_string='[#',
+                comment_end_string='#]'
+            )
+            
+            logger.info(f"📦 TemplateManager v6.0.5 initialized")
+            logger.info(f"   Order ConfigMap: {TEMPLATES_CONFIGMAP_ORDER}")
+            
+            # ⭐ Afficher la valeur ACTUELLE au démarrage
+            current_debug = os.getenv('DEBUG_VALUES', 'false')
+            if current_debug.lower() == 'true':
+                logger.info(f"   🐛 DEBUG_VALUES: ✅ ENABLED")
+            else:
+                logger.info(f"   🐛 DEBUG_VALUES: ❌ disabled (current value: '{current_debug}')")
+
+        def _load_templates_order_config(self, force_reload=False):
+            """Charge templates-order.yaml AVEC CACHE + custom order optionnel"""
+            if self.order_config_cache is not None and not force_reload:
+                self.stats['cache_hits'] += 1
+                logger.debug("♻️  Using cached templates-order.yaml")
+                return self.order_config_cache
+
+            try:
+                logger.debug(f"📡 API call: Loading {TEMPLATES_CONFIGMAP_ORDER}")
+                self.stats['api_calls'] += 1
+
+                v1 = client.CoreV1Api()
+                config_map = v1.read_namespaced_config_map(
+                    name=TEMPLATES_CONFIGMAP_ORDER,
+                    namespace=self.namespace
+                )
+
+                order_yaml = config_map.data.get('templates-order.yaml')
+                if not order_yaml:
+                    logger.error(f"❌ 'templates-order.yaml' not found in {TEMPLATES_CONFIGMAP_ORDER}")
+                    return {}
+
+                config = yaml.safe_load(order_yaml)
+
+                templates_count = len(config.get('templates', []))
+                jobs_count = len(config.get('jobs', []))
+                logger.info(f"✅ Loaded {TEMPLATES_CONFIGMAP_ORDER} (templates: {templates_count}, jobs: {jobs_count})")
+
+                # ⭐ Charger le custom order s'il existe (optionnel)
+                try:
+                    logger.debug(f"📡 API call: Loading {TEMPLATES_CONFIGMAP_ORDER_CUSTOM}")
+                    self.stats['api_calls'] += 1
+
+                    custom_cm = v1.read_namespaced_config_map(
+                        name=TEMPLATES_CONFIGMAP_ORDER_CUSTOM,
+                        namespace=self.namespace
+                    )
+                    custom_yaml = custom_cm.data.get('templates-order.yaml')
+                    if custom_yaml:
+                        custom_config = yaml.safe_load(custom_yaml)
+                        custom_templates = custom_config.get('templates', [])
+                        custom_jobs = custom_config.get('jobs', [])
+
+                        # Append après les templates/jobs standard
+                        config['templates'] = config.get('templates', []) + custom_templates
+                        config['jobs'] = config.get('jobs', []) + custom_jobs
+
+                        logger.info(f"✅ Custom order loaded from {TEMPLATES_CONFIGMAP_ORDER_CUSTOM}:")
+                        logger.info(f"   +{len(custom_templates)} template(s): {custom_templates}")
+                        logger.info(f"   +{len(custom_jobs)} job(s): {custom_jobs}")
+                    else:
+                        logger.warning(f"⚠️  'templates-order.yaml' not found in {TEMPLATES_CONFIGMAP_ORDER_CUSTOM}")
+
+                except ApiException as e:
+                    if e.status == 404:
+                        logger.debug(f"ℹ️  No custom order ConfigMap '{TEMPLATES_CONFIGMAP_ORDER_CUSTOM}' (optional)")
+                    else:
+                        logger.warning(f"⚠️  Error loading custom order: {e}")
+
+                self.order_config_cache = config
+
+                total_templates = len(config.get('templates', []))
+                total_jobs = len(config.get('jobs', []))
+                logger.info(f"📋 Final order: {total_templates} template(s), {total_jobs} job(s)")
+
+                return config
+
+            except ApiException as e:
+                if e.status == 404:
+                    logger.error(f"❌ ConfigMap '{TEMPLATES_CONFIGMAP_ORDER}' not found")
+                else:
+                    logger.error(f"❌ Error loading templates order: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return {}
+            except Exception as e:
+                logger.error(f"❌ Error loading templates order: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return {}
+        def load_templates_order(self):
+            """Charge la liste des templates (AVEC CACHE)"""
+            config = self._load_templates_order_config()
+            return config.get('templates', [])
+
+        def load_jobs_order(self):
+            """Charge la liste des jobs (AVEC CACHE)"""
+            config = self._load_templates_order_config()
+            return config.get('jobs', [])
+
+        def load_templates(self, templates_list):
+            """Charge les templates depuis ConfigMaps (AVEC CACHE)"""
+            try:
+                v1 = client.CoreV1Api()
+                templates = {}
+                new_cms = 0
+                cached_cms = 0
+                
+                for template_key in templates_list:
+                    try:
+                        if '/' not in template_key:
+                            logger.warning(f"⚠️  Invalid format: '{template_key}'")
+                            continue
+                        
+                        cm_name, file_key = template_key.split('/', 1)
+                        
+                        if cm_name not in self.configmaps_cache:
+                            logger.debug(f"📡 API call: Loading ConfigMap '{cm_name}'")
+                            self.stats['api_calls'] += 1
+                            new_cms += 1
+                            
+                            try:
+                                config_map = v1.read_namespaced_config_map(
+                                    name=cm_name,
+                                    namespace=self.namespace
+                                )
+                                self.configmaps_cache[cm_name] = config_map.data or {}
+                            except ApiException as e:
+                                if e.status == 404:
+                                    logger.warning(f"⚠️  ConfigMap '{cm_name}' not found")
+                                    self.configmaps_cache[cm_name] = {}
+                                else:
+                                    raise
+                        else:
+                            self.stats['cache_hits'] += 1
+                            cached_cms += 1
+                        
+                        cm_data = self.configmaps_cache[cm_name]
+                        if file_key in cm_data:
+                            templates[template_key] = cm_data[file_key]
+                        else:
+                            logger.warning(f"⚠️  '{file_key}' not found in '{cm_name}'")
+                    
+                    except Exception as e:
+                        logger.error(f"❌ Error loading '{template_key}': {e}")
+                        continue
+                
+                if new_cms > 0 or cached_cms > 0:
+                    logger.debug(f"📦 Templates: {len(templates)}/{len(templates_list)} "
+                            f"(new: {new_cms}, cached: {cached_cms})")
+                
+                return templates
+                
+            except Exception as e:
+                logger.error(f"❌ Error loading templates: {e}")
+                return {}
+
+        def render(self, template_name, values):
+            """
+            ⭐ v6.0.5: Rend un template SANS afficher les values
+            (Les values sont affichées UNE FOIS par le controller)
+            """
+            if template_name not in self.templates_cache:
+                self.templates_cache.update(self.load_templates([template_name]))
+            
+            if template_name not in self.templates_cache:
+                logger.warning(f"⚠️  Template '{template_name}' not found")
+                return None
+            
+            try:
+                self.stats['templates_rendered'] += 1
+                
+                # ⭐ PAS d'affichage des values ici
+                # C'est le controller qui s'en charge UNE FOIS
+                
+                # Rendre le template
+                template = self.jinja_env.from_string(self.templates_cache[template_name])
+                rendered = template.render(**values)
+                
+                return rendered
+                
+            except Exception as e:
+                logger.error(f"❌ Error rendering '{template_name}': {e}")
+                
+                # ⭐ En cas d'erreur, afficher les values pour debug
+                logger.error("=" * 70)
+                logger.error("❌ Values that caused the error:")
+                logger.error("=" * 70)
+                for key in sorted(values.keys()):
+                    try:
+                        value = values[key]
+                        if isinstance(value, (dict, list)):
+                            logger.error(f"   {key}: <{type(value).__name__} with {len(value)} items>")
+                        else:
+                            logger.error(f"   {key}: {value}")
+                    except Exception:
+                        logger.error(f"   {key}: <unprintable>")
+                logger.error("=" * 70)
+                
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
+
+
+        def render_to_documents(self, template_name, values):
+            """Rend un template et parse en documents YAML"""
+            rendered = self.render(template_name, values)
+            if not rendered:
+                return []
+            
+            try:
+                docs = list(yaml.safe_load_all(rendered))
+                valid_docs = [d for d in docs if d]
+                
+                return valid_docs
+                
+            except yaml.YAMLError as e:
+                logger.error(f"❌ YAML error for '{template_name}': {e}")
+                logger.error(f"Rendered content (first 500 chars):\n{rendered[:500]}")
+                return []
+
+        def get_stats(self):
+            """Retourne les statistiques de cache"""
+            return self.stats.copy()
+
+        def log_stats(self):
+            """
+            ⭐ Affiche les statistiques SEULEMENT en mode DEBUG
+            """
+            if not logger.isEnabledFor(logging.DEBUG):
+                return
+            
+            logger.debug("📊 TemplateManager Statistics:")
+            logger.debug(f"   API calls: {self.stats['api_calls']}")
+            logger.debug(f"   Cache hits: {self.stats['cache_hits']}")
+            logger.debug(f"   Templates rendered: {self.stats['templates_rendered']}")
+            logger.debug(f"   ConfigMaps in cache: {len(self.configmaps_cache)}")
+
+        def reload(self):
+            """Force le rechargement de tous les caches"""
+            logger.info("🔄 Reloading all templates...")
+            
+            old_stats = self.stats.copy()
+            
+            self.templates_cache = {}
+            self.configmaps_cache = {}
+            self.order_config_cache = None
+            
+            self.stats = {
+                'api_calls': 0,
+                'cache_hits': 0,
+                'templates_rendered': 0
+            }
+            
+            self._load_templates_order_config(force_reload=True)
+            
+            logger.info(f"✅ Reload complete (was: {old_stats})")
+
+            

@@ -1,0 +1,90 @@
+#example.yml
+apiVersion: secure-ns.example.com/v1alpha1
+kind: SecureNamespace
+metadata:
+#  annotations:  key: string
+#  labels:  key: string
+spec:
+  egressController:
+    enabled: true
+#    reconcileIntervalSeconds: int
+  ingress:
+    controller:
+#      replicas: 1
+#      resources:
+#        limits:
+#          cpu: string
+#          memory: string
+#        requests:
+#          cpu: string
+#          memory: string
+      type: nginx
+#      type: haproxy
+#      type: traefik
+
+#    domain: string
+    enabled: true
+#    serviceName: string
+  network:
+#    interfaceName: ens192
+    isolationEnabled: true
+    externalAccess:
+      enabled: true
+      namespaces:
+        - awx-dev
+      services:
+        - name: example-service
+          namespace: cco2-dev
+      namespaces:
+        - name: cco3-dev
+      rules:
+        - name: "AWX"
+          description: "PB avec FQDN access to AWX"
+          fqdns:
+            - "awx.secure-ns.example.com"
+          ports:
+            - port: 443
+              protocol: TCP
+        - name: "AWX IP"
+          description: "access to AWX"
+          cidrs:
+            - "203.0.113.8/32"
+          ports:
+            - port: 80
+              protocol: TCP
+  project:
+    environment: dev
+    solution: cco
+
+  quotas:
+    enabled: true
+#    compute:
+#      limits.cpu: "2048m"
+#      limits.memory: "2Gi"
+#      requests.cpu: "1024m"
+#      requests.memory: "1Gi"
+    objects:
+#      configmaps: 5
+#      pods: 5
+#      secrets: 5
+      services: 6
+#    storage:
+#      persistentvolumeclaims: 2
+#      requests.storage: "10Gi"
+  example:
+    enabled: true
+    replicas: 1
+  serviceaccount:
+    enabled: true
+    name: test
+    roles:
+      - apiGroups: [""]
+        resources: ["configmaps"]
+        verbs: ["get", "list", "watch"]
+    clusterroles:
+      - apiGroups:
+          - authentication.k8s.io
+        resources:
+          - tokenreviews
+        verbs:
+          - create

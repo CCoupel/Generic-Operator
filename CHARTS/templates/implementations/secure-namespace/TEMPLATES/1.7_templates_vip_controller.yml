@@ -1,0 +1,186 @@
+# ConfigMap 7 - Egress Controller
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  controller-deployment.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: [{ namespace_name }]-vip-controller
+      namespace: secure-namespace
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        app: egress-vip-controller
+        managed-namespace: [{ namespace_name }]
+    [% if spec.egressController.enabled or spec.ingress.enabled %]
+    _action: apply
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: [{ namespace_name }]-vip-controller
+      template:
+        metadata:
+          labels:
+            app: [{ namespace_name }]-vip-controller
+            managed-namespace: [{ namespace_name }]
+        spec:
+          #serviceAccountName: [{ namespace_name }]-egress-vip-controller-sa
+          serviceAccountName: secure-namespace-operator
+          initContainers:
+          - name: install-deps
+            image: python:3.11-slim
+            env:
+                {{- if .Values.proxy.enabled }}
+                - name: http_proxy
+                  value: {{ .Values.proxy.http | quote }}
+                - name: https_proxy
+                  value: {{ .Values.proxy.https | quote }}
+                - name: no_proxy
+                  value: {{ .Values.proxy.noProxy | quote }}
+                {{- end }}
+                - name: LOG_LEVEL
+                  value: {{ .Values.operator.logLevel | default "INFO" }}
+            command: 
+            - sh
+            - -c
+            - |
+              pip install --upgrade pip
+              pip install -r /code/requirements.txt --target /deps
+            volumeMounts:
+            - {name: code, mountPath: /code}
+            - {name: deps, mountPath: /deps}
+
+          containers:
+          - name: controller
+            image: python:3.11-slim
+            command: 
+            - sh
+            - -c
+            - |
+              export PYTHONPATH=/deps:$PYTHONPATH
+              unset http_proxy
+              unset https_proxy
+              exec python /code/controller.py
+
+            env:
+            - name: NAMESPACE
+              value: [{ operator_namespace }]
+            - name: SECURENAMESPACE_NAME
+              value: [{ securenamespace_name }]
+            - name: TEMPLATES_CONFIGMAP_ORDER
+              value: "vip-controller-templates-order"  # ⭐ ConfigMap de l'ordre
+            - name: DEPLOYMENT_NAME
+              value: [{ namespace_name }]-vip-controller
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            # ⭐ CRD piloté par le moteur générique — rendu par Helm (pas par le moteur Jinja2 runtime)
+            - name: CRD_GROUP
+              value: {{ .Values.crd.group | quote }}
+            - name: CRD_VERSION
+              value: {{ .Values.crd.version | quote }}
+            - name: CRD_PLURAL
+              value: {{ .Values.crd.plural | quote }}
+
+
+            resources:
+              requests: {memory: "128Mi", cpu: "100m"}
+              limits: {memory: "256Mi", cpu: "500m"}
+
+            volumeMounts:
+            - {name: code, mountPath: /code}
+            - {name: deps, mountPath: /deps}
+
+          volumes:
+          - name: code
+            configMap: 
+              name: vip-controller-python-code
+              defaultMode: 0755
+          - name: deps
+            emptyDir: {}
+
+    [% else %]
+    _action: delete
+    [% endif %]
+  controller-rbac.yaml: |
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: [{ namespace_name }]-egress-vip-controller-sa
+      namespace: secure-namespace
+    [% if spec.egressController.enabled or spec.ingress.enabled %]
+      labels:
+        app.kubernetes.io/component: rbac
+    [% else %]
+    _action: delete
+    [% endif %]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: [{ namespace_name }]-egress-vip-controller-role
+    [% if spec.egressController.enabled or spec.ingress.enabled %]
+      labels:
+        app.kubernetes.io/component: rbac
+    rules:
+    - apiGroups: ["apps"]
+      resources: ["deployments"]
+      verbs: ["get", "list", "watch", "update", "patch"]
+    - apiGroups: [""]
+      resources: ["namespaces", "endpoints", "pods", "nodes"]
+      verbs: ["get", "list", "watch", "update", "patch"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["get", "list", "watch", "update", "patch", "delete", "create"]
+      # Permissions pour gérer les ressources dans les namespaces
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods/log"]
+      verbs: ["get", "list"]
+    - apiGroups: ["batch"]
+      resources: ["jobs", "services"]
+      verbs: ["get", "list", "watch", "create", "delete", "patch"]
+    - apiGroups: ["batch"]
+      resources: ["jobs/status"]
+      verbs: ["get"]
+    - apiGroups: ["cilium.io"]
+      resources: ["ciliumegressgatewaypolicies", "ciliuml2announcementpolicies"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    - apiGroups: ["{{ .Values.crd.group }}"]
+      resources: ["{{ .Values.crd.plural }}"]
+      verbs: ["get","watch","list"]
+    - apiGroups: ["apiextensions.k8s.io"]
+      resources: ["customresourcedefinitions"]
+      verbs: ["get", "list", "watch"]
+    [% else %]
+    _action: delete
+    [% endif %]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: [{ namespace_name }]-egress-vip-controller-binding
+    [% if spec.egressController.enabled or spec.ingress.enabled %]
+      labels:
+        app.kubernetes.io/component: rbac
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: [{ namespace_name }]-egress-vip-controller-role
+    subjects:
+    - kind: ServiceAccount
+      name: [{ namespace_name }]-egress-vip-controller-sa
+      namespace: secure-namespace
+    [% else %]
+    _action: delete
+    [% endif %]

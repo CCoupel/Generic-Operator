@@ -1,0 +1,498 @@
+#0_CRD.yml:
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: {{ .Values.crd.plural }}.{{ .Values.crd.group }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crds
+spec:
+  group: {{ .Values.crd.group }}
+  names:
+    kind: {{ .Values.crd.kind }}
+    listKind: {{ .Values.crd.kind }}List
+    plural: {{ .Values.crd.plural }}
+    singular: {{ .Values.crd.kind | lower }}
+    shortNames:
+    - sns
+  scope: Cluster
+  versions:
+  - name: {{ .Values.crd.version }}
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required:
+            - project
+            properties:
+              project:
+                type: object
+                required:
+                - solution
+                - environment
+                properties:
+                  solution:
+                    type: string
+                    description: "Nom de la solution/projet Rancher"
+                    minLength: 1
+                  environment:
+                    type: string
+                    description: "Environnement: TEST, DEV, INTEG, PROD"
+                    enum:
+                    - TEST
+                    - DEV
+                    - INTEG
+                    - PROD
+                    - test
+                    - dev
+                    - integ
+                    - prod
+                  contact:
+                    type: object
+                    description: "Responsable du projet/environnement"
+                    properties:
+                      name:
+                        type: string
+                        description: "Nom complet du responsable"
+                        minLength: 1
+                      email:
+                        type: string
+                        description: "Adresse email du responsable"
+                        pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+              quotas:
+                type: object
+                description: "Quotas de ressources pour le namespace"
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Activer les quotas"
+                    default: true
+                  
+                  compute:
+                    type: object
+                    description: "Quotas de compute (CPU/mémoire)"
+                    properties:
+                      requests.cpu:
+                        type: string
+                        description: "Total CPU requests"
+                        default: "1024m"
+                      requests.memory:
+                        type: string
+                        description: "Total mémoire requests"
+                        default: "1Gi"
+                      limits.cpu:
+                        type: string
+                        description: "Total CPU limits"
+                        default: "2048m"
+                      limits.memory:
+                        type: string
+                        description: "Total mémoire limits"
+                        default: "2Gi"
+                  
+                  storage:
+                    type: object
+                    description: "Quotas de stockage"
+                    properties:
+                      requests.storage:
+                        type: string
+                        description: "Total stockage demandé"
+                        default: "10Gi"
+                      persistentvolumeclaims:
+                        type: integer
+                        description: "Nombre max de PVCs"
+                        default: 2
+                  
+                  objects:
+                    type: object
+                    description: "Quotas d'objets Kubernetes"
+                    properties:
+                      pods:
+                        type: integer
+                        description: "Nombre max de pods"
+                        default: 5
+                      services:
+                        type: integer
+                        description: "Nombre max de services"
+                        default: 5
+                      configmaps:
+                        type: integer
+                        description: "Nombre max de configmaps"
+                        default: 5
+                      secrets:
+                        type: integer
+                        description: "Nombre max de secrets"
+                        default: 5
+              ingress:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Activer l'ingress controller et le LoadBalancer"
+                    default: false
+                  serviceName:
+                    type: string
+                    description: "Nom du service LoadBalancer"
+                    default: "lb-gateway"
+                  domain:
+                    type: string
+                    description: "Domaine pour external-dns (ex: example.com)"
+                    default: "k8s-staging.secure-ns.example.com"
+                  controller:
+                    type: object
+                    properties:
+                      nodeSelector:
+                        properties:
+                          label:
+                            default: secure-ns/app
+                            description: node label name to check for VIP node placing
+                            type: string
+                          value:
+                            default: GENERIC
+                            description: node label value for VIP placement
+                            type: string
+                        type: object
+                      type:
+                        type: string
+                        description: "Type de contrôleur ingress"
+                        enum:
+                        - nginx
+                        - haproxy
+                        - traefik
+                        default: traefik
+                      replicas:
+                        type: integer
+                        description: "Nombre de replicas du contrôleur"
+                        default: 1
+                        minimum: 1
+                      resources:
+                        type: object
+                        properties:
+                          requests:
+                            type: object
+                            properties:
+                              cpu:
+                                type: string
+                                default: "100m"
+                              memory:
+                                type: string
+                                default: "128Mi"
+                          limits:
+                            type: object
+                            properties:
+                              cpu:
+                                type: string
+                                default: "500m"
+                              memory:
+                                type: string
+                                default: "512Mi"
+              
+              network:
+                type: object
+                properties:
+                  interfaceName:
+                    type: string
+                    description: "Interface réseau pour l'egress (eth0, ens3, etc.)"
+                    default: "ens192"
+                  isolationEnabled:
+                    type: boolean
+                    description: "Activer l'isolation réseau avec Cilium NetworkPolicy"
+                    default: true
+                  externalAccess:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+                      rules:
+                        type: array
+                        description: "Liste des règles d'accès externe"
+                        items:
+                          type: object
+                          required: ["name"]
+                          properties:
+                            name:
+                              type: string
+                              description: "Nom de la règle (pour documentation)"
+                            description:
+                              type: string
+                              description: "Description de la règle"
+                            # Destinations par IP
+                            cidrs:
+                              type: array
+                              description: "Liste de CIDR autorisés (ex: 192.168.1.0/24)"
+                              items:
+                                type: string
+                            # Destinations par FQDN
+                            fqdns:
+                              type: array
+                              description: "Liste de noms de domaine autorisés (ex: api.example.com)"
+                              items:
+                                type: string
+                            # Ports autorisés
+                            ports:
+                              type: array
+                              description: "Liste des ports autorisés"
+                              items:
+                                type: object
+                                required: ["port", "protocol"]
+                                properties:
+                                  port:
+                                    type: integer
+                                    minimum: 1
+                                    maximum: 65535
+                                  protocol:
+                                    type: string
+                                    enum: ["TCP", "UDP"]
+                                    default: "TCP"
+                      services:
+                        type: array
+                        description: "Liste des Services Kubernetes autorisés"
+                        items:
+                          type: object
+                          required: ["name", "namespace"]  # ports n'est plus required
+                          properties:
+                            name:
+                              type: string
+                              description: "Nom du service"
+                            namespace:
+                              type: string
+                              description: "Namespace du service"
+                            ports:
+                              type: array
+                              description: "Ports spécifiques (optionnel, si absent = tous les ports du service)"
+                              items:
+                                type: object
+                                required: ["port"]
+                                properties:
+                                  port:
+                                    type: integer
+                                    minimum: 1
+                                    maximum: 65535
+                                  protocol:
+                                    type: string
+                                    enum: ["TCP", "UDP"]
+                                    default: "TCP"
+                      namespaces:
+                        type: array
+                        description: "Liste des namespaces autorisés"
+                        items:
+                            # Format objet - avec restriction de ports
+                          type: object
+                          required: ["name"]
+                          properties:
+                            name:
+                              type: string
+                              description: "Nom du namespace"
+                            ports:
+                              type: array
+                              description: "Ports autorisés (optionnel)"
+                              items:
+                                type: object
+                                required: ["port"]
+                                properties:
+                                  port:
+                                    type: integer
+                                    minimum: 1
+                                    maximum: 65535
+                                  protocol:
+                                    type: string
+                                    enum: ["TCP", "UDP"]
+                                    default: "TCP"
+                      standard:
+                        description: Accès aux services d'infrastructure standard
+                        properties:
+                          git:
+                            default: false
+                            type: boolean
+                          logging:
+                            default: true
+                            type: boolean
+                          proxy:
+                            default: false
+                            type: boolean
+                          s3:
+                            default: false
+                            type: boolean
+                          smtp:
+                            default: false
+                            type: boolean
+                          vault:
+                            default: false
+                            type: boolean
+                        type: object
+              
+              egressController:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Activer le contrôleur Egress VIP"
+                    default: false
+                  reconcileIntervalSeconds:
+                    type: integer
+                    description: "Intervalle de réconciliation en secondes"
+                    default: 30
+                    minimum: 10
+              example:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "example app to be deployed"
+                    default: false
+                  image:
+                    type: string
+                    description: "docker image"
+                    default: "nginx:latest"
+                  hostPrefix:
+                    type: string
+                    description: "host prefix for ingress"
+                    default: "app"
+              serviceaccount:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    default: false
+                  name:
+                    type: string
+                    default: "app-sa"
+                  roles:
+                    type: array
+                    description: "Règles RBAC namespacées (Role)"
+                    items:
+                      type: object
+                      properties:
+                        apiGroups:
+                          type: array
+                          items:
+                            type: string
+                        resources:
+                          type: array
+                          items:
+                            type: string
+                        verbs:
+                          type: array
+                          items:
+                            type: string
+                        resourceNames:
+                          type: array
+                          items:
+                            type: string
+                  clusterroles:
+                    type: array
+                    description: "Règles RBAC cluster-scoped (ClusterRole)"
+                    items:
+                      type: object
+                      properties:
+                        apiGroups:
+                          type: array
+                          items:
+                            type: string
+                        resources:
+                          type: array
+                          items:
+                            type: string
+                        verbs:
+                          type: array
+                          items:
+                            type: string
+                        resourceNames:
+                          type: array
+                          items:
+                            type: string
+
+
+          status:
+            type: object
+            properties:
+              namespaceName:
+                type: string
+                description: "Nom du namespace créé"
+              state:
+                type: string
+                description: "État de la création"
+              message:
+                type: string
+                description: "Message de statut"
+              createdResources:
+                type: array
+                description: "Liste des ressources créées"
+                items:
+                  type: string
+              ingressVIP:
+                type: string
+                description: "VIP du LoadBalancer si activé"
+              egressNode:
+                type: string
+                description: "Nœud hébergeant l'egress si activé"
+    
+    subresources:
+      status: {}
+    
+    additionalPrinterColumns:
+      - name: Solution
+        type: string
+        jsonPath: .spec.project.solution
+      - name: Environment
+        type: string
+        jsonPath: .spec.project.environment
+      - name: Contact
+        type: string
+        jsonPath: .spec.project.contact.name
+        priority: 1
+      - name: Email
+        type: string
+        jsonPath: .spec.project.contact.email
+        # ⭐ v1.1.0: Colonnes VIP Controller - lues depuis les annotations
+        # Le "/" dans le nom de l'annotation s'échappe avec \. en jsonPath
+      - name: VIP
+        type: string
+        jsonPath: .metadata.annotations.current-vip
+        priority: 0
+      - name: Node
+        type: string
+        jsonPath: .metadata.annotations.current-node
+        priority: 0
+      - name: Last-VIP
+        type: string
+        jsonPath: .metadata.annotations.last-vip
+        priority: 1
+      - name: Last-Node
+        type: string
+        jsonPath: .metadata.annotations.last-node
+        priority: 1
+
+      - name: Quota
+        type: boolean
+        jsonPath: .spec.quotas.enabled
+      - name: Ingress
+        type: boolean
+        jsonPath: .spec.ingress.enabled
+      - name: Ingress Controller
+        type: boolean
+        jsonPath: .spec.ingress.controller.type
+      - name: Egress
+        type: boolean
+        jsonPath: .spec.egressController.enabled
+      - name: Network Isolation
+        type: boolean
+        jsonPath: .spec.network.isolationEnabled
+      - name: Network Egress
+        type: boolean
+        jsonPath: .spec.network.externalAccess.enabled
+      - name: ServiceAccount
+        type: boolean
+        jsonPath: .spec.serviceaccount.enabled
+      - name: Age
+        type: date
+        jsonPath: .metadata.creationTimestamp

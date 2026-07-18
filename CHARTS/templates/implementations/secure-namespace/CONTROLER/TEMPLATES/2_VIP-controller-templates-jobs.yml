@@ -1,0 +1,314 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vip-controller-templates-jobs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: vip-controller
+    app.kubernetes.io/component: jobs-templates
+    app.kubernetes.io/managed-by: secure-namespace-operator
+data:
+  job-del-ip.yaml: |
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [# HELPERS - Noms courts pour respecter la limite de 63 chars         #]
+    [# ts_short  = HH-MM-SSz (ex: 14-35-22z)                             #]
+    [# node_short = node tronqué à 20 chars                               #]
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [% set ts_parts = timestamp.replace(':', '-').replace('T', '-').replace('Z', 'z').split('-') %]
+    [% set ts_short = ts_parts[3] ~ '-' ~ ts_parts[4] ~ '-' ~ ts_parts[5] %]
+    [% set node_short = node_name.replace('.', '-')[:20] if node_name else '' %]
+    [% set current_egress = spec.egressController.enabled %]
+
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [# CAS 1: vip_changed ou node_changed                                 #]
+    [# Phase 1: Cleanup previous_vip sur TOUS les nodes                  #]
+    [# Phase 2: Cleanup current VIP sur tous les nodes sauf current      #]
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [% if current_egress and (vip_changed or node_changed) %]
+
+      [# Phase 1: Cleanup previous_vip sur TOUS #]
+      [% if previous_vip %]
+        [% set prev_ip_fmt = previous_vip.replace('.', '-') %]
+        [% for eligible_node in eligible_nodes %]
+          [% set en_short = eligible_node.replace('.', '-')[:20] %]
+    ---
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: vip-del-[{ prev_ip_fmt }]-[{ en_short }]-old-[{ ts_short }]
+      namespace: [{ operator_namespace }]
+      labels:
+        app.kubernetes.io/name: vip-cleanup
+        app.kubernetes.io/component: previous-vip
+        managed-namespace: [{ namespace_name }]
+      annotations:
+        reason: "cleanup-previous-vip"
+        previous-vip: "[{ previous_vip }]"
+        target-node: "[{ eligible_node }]"
+    spec:
+      ttlSecondsAfterFinished: 120
+      backoffLimit: 2
+      template:
+        spec:
+          hostNetwork: true
+          nodeSelector:
+            kubernetes.io/hostname: [{ eligible_node }]
+          tolerations:
+            - operator: Exists
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: alpine:latest
+              command:
+                - sh
+                - -c
+                - |
+                  echo "Cleanup previous VIP [{ previous_vip }] on [{ eligible_node }]"
+                  if ! ip addr show dev [{ spec.network.interfaceName }] | grep -q "[{ previous_vip }]/32"; then
+                    echo "Already absent"
+                    exit 0
+                  fi
+                  ip addr del [{ previous_vip }]/32 dev [{ spec.network.interfaceName }] || true
+                  echo "Removed"
+              securityContext:
+                privileged: true
+                capabilities:
+                  add: [NET_ADMIN]
+        [% endfor %]
+      [% endif %]
+
+      [# Phase 2: Cleanup current VIP sur tous sauf current node #]
+      [% if egress_ip and node_name %]
+        [% set ip_fmt = egress_ip.replace('.', '-') %]
+        [% for eligible_node in eligible_nodes %]
+          [% if eligible_node != node_name %]
+            [% set en_short = eligible_node.replace('.', '-')[:20] %]
+    ---
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: vip-del-[{ ip_fmt }]-[{ en_short }]-cur-[{ ts_short }]
+      namespace: [{ operator_namespace }]
+      labels:
+        app.kubernetes.io/name: vip-cleanup
+        app.kubernetes.io/component: current-vip
+        managed-namespace: [{ namespace_name }]
+      annotations:
+        reason: "cleanup-current-vip-other-nodes"
+        vip: "[{ egress_ip }]"
+        current-node: "[{ node_name }]"
+        target-node: "[{ eligible_node }]"
+    spec:
+      ttlSecondsAfterFinished: 120
+      backoffLimit: 2
+      template:
+        spec:
+          hostNetwork: true
+          nodeSelector:
+            kubernetes.io/hostname: [{ eligible_node }]
+          tolerations:
+            - operator: Exists
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: alpine:latest
+              command:
+                - sh
+                - -c
+                - |
+                  echo "Cleanup current VIP [{ egress_ip }] on [{ eligible_node }]"
+                  if ! ip addr show dev [{ spec.network.interfaceName }] | grep -q "[{ egress_ip }]/32"; then
+                    echo "Already absent"
+                    exit 0
+                  fi
+                  ip addr del [{ egress_ip }]/32 dev [{ spec.network.interfaceName }] || true
+                  echo "Removed"
+              securityContext:
+                privileged: true
+                capabilities:
+                  add: [NET_ADMIN]
+          [% endif %]
+        [% endfor %]
+      [% endif %]
+
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [# CAS 2: EGRESS DÉSACTIVÉ - Cleanup last_vip sur TOUS les nodes     #]
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [% elif not current_egress and egress_changed and last_vip %]
+      [% set last_ip_fmt = last_vip.replace('.', '-') %]
+      [% for eligible_node in eligible_nodes %]
+        [% set en_short = eligible_node.replace('.', '-')[:20] %]
+    ---
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: vip-del-[{ last_ip_fmt }]-[{ en_short }]-dis-[{ ts_short }]
+      namespace: [{ operator_namespace }]
+      labels:
+        app.kubernetes.io/name: vip-cleanup
+        app.kubernetes.io/component: egress-disabled
+        managed-namespace: [{ namespace_name }]
+      annotations:
+        reason: "egress-disabled"
+        vip: "[{ last_vip }]"
+        target-node: "[{ eligible_node }]"
+    spec:
+      ttlSecondsAfterFinished: 120
+      backoffLimit: 2
+      template:
+        spec:
+          hostNetwork: true
+          nodeSelector:
+            kubernetes.io/hostname: [{ eligible_node }]
+          tolerations:
+            - operator: Exists
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: alpine:latest
+              command:
+                - sh
+                - -c
+                - |
+                  echo "Cleanup VIP [{ last_vip }] on [{ eligible_node }] (egress disabled)"
+                  if ! ip addr show dev [{ spec.network.interfaceName }] | grep -q "[{ last_vip }]/32"; then
+                    echo "Already absent"
+                    exit 0
+                  fi
+                  ip addr del [{ last_vip }]/32 dev [{ spec.network.interfaceName }] || true
+                  echo "Removed"
+              securityContext:
+                privileged: true
+                capabilities:
+                  add: [NET_ADMIN]
+      [% endfor %]
+    [% endif %]
+
+  job-add-ip.yaml: |
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [# ADD VIP sur le node courant                                        #]
+    [# Déclenché si vip_changed ou node_changed                          #]
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [% set ts_parts = timestamp.replace(':', '-').replace('T', '-').replace('Z', 'z').split('-') %]
+    [% set ts_short = ts_parts[3] ~ '-' ~ ts_parts[4] ~ '-' ~ ts_parts[5] %]
+    [% set node_short = node_name.replace('.', '-')[:20] if node_name else '' %]
+    [% set current_egress = spec.egressController.enabled %]
+
+    [% if current_egress and (vip_changed or node_changed) and egress_ip and node_name %]
+    [% set ip_fmt = egress_ip.replace('.', '-') %]
+    ---
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: vip-add-[{ ip_fmt }]-[{ node_short }]-[{ ts_short }]
+      namespace: [{ operator_namespace }]
+      labels:
+        app.kubernetes.io/name: vip-add
+        app.kubernetes.io/component: add
+        managed-namespace: [{ namespace_name }]
+      annotations:
+        reason: "[% if vip_changed %]vip-changed[% elif node_changed %]node-changed[% endif %]"
+        vip: "[{ egress_ip }]"
+        node: "[{ node_name }]"
+        [% if previous_vip %]
+        previous-vip: "[{ previous_vip }]"
+        [% endif %]
+        [% if previous_node %]
+        previous-node: "[{ previous_node }]"
+        [% endif %]
+    spec:
+      ttlSecondsAfterFinished: 120
+      backoffLimit: 2
+      template:
+        spec:
+          hostNetwork: true
+          nodeSelector:
+            kubernetes.io/hostname: [{ node_name }]
+          tolerations:
+            - operator: Exists
+          restartPolicy: Never
+          containers:
+            - name: add-ip
+              image: alpine:latest
+              command:
+                - sh
+                - -c
+                - |
+                  echo "Add VIP [{ egress_ip }] on [{ node_name }]"
+                  echo "   Reason: [% if vip_changed %]VIP changed[% elif node_changed %]Node changed[% endif %]"
+                  [% if previous_vip %]
+                  echo "   Previous VIP: [{ previous_vip }]"
+                  [% endif %]
+                  if ip addr show dev [{ spec.network.interfaceName }] | grep -q "[{ egress_ip }]/32"; then
+                    echo "VIP already present"
+                    exit 0
+                  fi
+                  ip addr add [{ egress_ip }]/32 dev [{ spec.network.interfaceName }]
+                  if ip addr show dev [{ spec.network.interfaceName }] | grep -q "[{ egress_ip }]/32"; then
+                    echo "VIP added successfully"
+                    ip addr show dev [{ spec.network.interfaceName }] | grep "inet "
+                    exit 0
+                  else
+                    echo "Failed to add VIP"
+                    exit 1
+                  fi
+              securityContext:
+                privileged: true
+                capabilities:
+                  add: [NET_ADMIN]
+    [% endif %]
+
+  job-delete-shutdown.yaml: |
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [# SHUTDOWN: Supprime VIP sur le node courant                         #]
+    [# ═══════════════════════════════════════════════════════════════════ #]
+    [% set ts_parts = timestamp.replace(':', '-').replace('T', '-').replace('Z', 'z').split('-') %]
+    [% set ts_short = ts_parts[3] ~ '-' ~ ts_parts[4] ~ '-' ~ ts_parts[5] %]
+    [% set node_short = node_name.replace('.', '-')[:20] if node_name else '' %]
+
+    [% if shutdown_mode and egress_ip and node_name %]
+    [% set ip_fmt = egress_ip.replace('.', '-') %]
+    ---
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: vip-del-[{ ip_fmt }]-[{ node_short }]-sht-[{ ts_short }]
+      namespace: [{ operator_namespace }]
+      labels:
+        app.kubernetes.io/name: vip-delete
+        app.kubernetes.io/component: shutdown
+        managed-namespace: [{ namespace_name }]
+      annotations:
+        reason: "shutdown"
+        vip: "[{ egress_ip }]"
+        node: "[{ node_name }]"
+    spec:
+      ttlSecondsAfterFinished: 120
+      backoffLimit: 2
+      template:
+        spec:
+          hostNetwork: true
+          nodeSelector:
+            kubernetes.io/hostname: [{ node_name }]
+          tolerations:
+            - operator: Exists
+          restartPolicy: Never
+          containers:
+            - name: delete-ip
+              image: alpine:latest
+              command:
+                - sh
+                - -c
+                - |
+                  echo "Delete VIP [{ egress_ip }] on [{ node_name }] (shutdown)"
+                  if ! ip addr show dev [{ spec.network.interfaceName }] | grep -q "[{ egress_ip }]/32"; then
+                    echo "VIP already absent"
+                    exit 0
+                  fi
+                  ip addr del [{ egress_ip }]/32 dev [{ spec.network.interfaceName }] || true
+                  echo "VIP removed"
+              securityContext:
+                privileged: true
+                capabilities:
+                  add: [NET_ADMIN]
+    [% endif %]

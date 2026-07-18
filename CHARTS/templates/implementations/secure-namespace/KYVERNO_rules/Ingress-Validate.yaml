@@ -1,0 +1,190 @@
+# =========================================================================
+# ClusterPolicy: Validation des hostnames des Ingress
+#
+# Deux catégories de hosts :
+#   1. Hosts INTERNES : terminent par .<domainedns du chart>
+#      → Doivent respecter le format : <name>.<environment>.<solution>.<domainedns>
+#   2. Hosts EXTERNES : tous les autres
+#      → Doivent terminer par .{{ .Values.crd.group }}
+# =========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-ingress-hostname-format
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kyverno-policy
+  annotations:
+    policies.kyverno.io/title: Validate Ingress Hostname Format
+    policies.kyverno.io/category: Networking
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Deux règles de validation selon le domaine du host :
+      - Host interne (se termine par .<dnsDomain>) : doit être <name>.<env>.<solution>.<dnsDomain>
+      - Host externe (autre) : doit se terminer par .{{ .Values.crd.group }}
+      S'applique uniquement aux namespaces avec {{ .Values.crd.group }}/managed=true.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    # -----------------------------------------------------------------------
+    # Règle 1a : Hosts internes (terminant par le domaine DNS du chart)
+    # Format attendu : <name>.<environment>.<solution>.<dnsDomain>
+    # Le suffixe attendu est donc : <environment>.<solution>.<dnsDomain>
+    # -----------------------------------------------------------------------
+    - name: check-internal-hostname-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchLabels:
+                  {{ .Values.crd.group }}/managed: "true"
+                matchExpressions:
+                  - key: {{ .Values.crd.group }}/environment
+                    operator: Exists
+                  - key: {{ .Values.crd.group }}/solution
+                    operator: Exists
+      context:
+        - name: nsLabels
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ "{{" }} request.namespace {{ "}}" }}"
+            jmesPath: "metadata.labels"
+        # Suffixe interne attendu après le premier segment : <env>.<solution>.<dnsDomain>
+        - name: internalSuffix
+          variable:
+            value: "{{ "{{" }} nsLabels.\"{{ .Values.crd.group }}/environment\" {{ "}}" }}.{{ "{{" }} nsLabels.\"{{ .Values.crd.group }}/solution\" {{ "}}" }}.{{ .Values.dnsDomain }}"
+        # Domaine DNS complet du chart (pour détecter si un host est "interne")
+
+      validate:
+        
+        foreach:
+          - list: "request.object.spec.rules[].host"
+            # Ne valider que les hosts qui se terminent par le domaine interne
+            preconditions:
+              all:
+                - key: "{{ "{{" }} element {{ "}}" }}"
+                  operator: AnyIn
+                  value: "{{ "{{" }} request.object.spec.rules[?ends_with(host, '.{{ .Values.dnsDomain }}')].host {{ "}}" }}"
+            deny:
+              conditions:
+                all:
+                  # Le host doit se terminer par .<env>.<solution>.<dnsDomain>
+                  - key: "{{ "{{" }} ends_with(element, internalSuffix) {{ "}}" }}"
+                    operator: Equals
+                    value: false
+              message: >-
+                Host interne invalide: '{{ "{{" }} element {{ "}}" }}'.
+                Les hosts se terminant par '.{{ .Values.dnsDomain }}' doivent respecter le format :
+                <name>.{{ "{{" }} internalSuffix {{ "}}" }}
+
+    # -----------------------------------------------------------------------
+    # Règle 1b : Hosts externes (ne terminant PAS par le domaine DNS du chart)
+    # Doivent se terminer par .{{ .Values.crd.group }}
+    # -----------------------------------------------------------------------
+    - name: check-external-hostname-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchLabels:
+                  {{ .Values.crd.group }}/managed: "true"
+      context:
+        - name: dnsDomain
+          variable:
+            value: "{{ .Values.dnsDomain }}"
+      validate:
+        foreach:
+          - list: "request.object.spec.rules[].host"
+            # Ne valider que les hosts qui ne se terminent PAS par le domaine interne
+            preconditions:
+              all:
+                - key: "{{ "{{" }} element {{ "}}" }}"
+                  operator: AnyNotIn
+                  value: "{{ "{{" }} request.object.spec.rules[?ends_with(host, '.{{ .Values.dnsDomain }}')].host {{ "}}" }}"
+            deny:
+              conditions:
+                all:
+                  # Le host externe doit terminer par .{{ .Values.crd.group }}
+                  - key: "{{ "{{" }} ends_with(element, '.{{ .Values.crd.group }}') {{ "}}" }}"
+                    operator: Equals
+                    value: false
+
+              message: >-
+                Host externe invalide: '{{ "{{" }} element {{ "}}" }}'.
+                Les hosts ne se terminant pas par '.{{ .Values.dnsDomain }}' doivent se terminer par '.{{ .Values.crd.group }}'.
+
+---
+# =========================================================================
+# ClusterPolicy: Les hosts TLS doivent inclure TOUS les hosts des rules
+#
+# Logique : si spec.tls est défini, chaque host présent dans spec.rules
+# doit apparaître dans au moins un des blocs spec.tls[].hosts.
+# (Un host TLS supplémentaire sans rule correspondante est toléré.)
+# =========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-ingress-tls-covers-all-rules
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kyverno-policy
+  annotations:
+    policies.kyverno.io/title: Validate Ingress TLS Covers All Rule Hosts
+    policies.kyverno.io/category: Networking
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Lorsque spec.tls est défini, vérifie que chaque host déclaré
+      dans spec.rules[].host est couvert par au moins un bloc spec.tls[].hosts.
+      S'applique uniquement aux namespaces avec {{ .Values.crd.group }}/managed=true.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: tls-must-cover-all-rule-hosts
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchLabels:
+                  {{ .Values.crd.group }}/managed: "true"
+                matchExpressions:
+                  - key: {{ .Values.crd.group }}/environment
+                    operator: Exists
+                  - key: {{ .Values.crd.group }}/solution
+                    operator: Exists
+      # Ne s'applique que si TLS est défini
+      preconditions:
+        all:
+          - key: "{{ "{{" }} request.object.spec.tls || `[]` | length(@) {{ "}}" }}"
+            operator: GreaterThan
+            value: 0
+      context:
+        # Aplatir tous les hosts TLS en une seule liste
+        - name: tlsHosts
+          variable:
+            jmesPath: "request.object.spec.tls[].hosts[]"
+      validate:
+        
+        foreach:
+          - list: "request.object.spec.rules[].host"
+            deny:
+              conditions:
+                all:
+                  # Le host de la rule doit être présent dans la liste TLS
+                  - key: "{{ "{{" }} element {{ "}}" }}"
+                    operator: AnyNotIn
+                    value: "{{ "{{" }} tlsHosts {{ "}}" }}"
+                message: >-
+                  TLS incomplet : le host '{{ "{{" }} element {{ "}}" }}' présent dans spec.rules
+                  n'est pas couvert par spec.tls[].hosts.
+                  Hosts TLS déclarés : {{ "{{" }} tlsHosts {{ "}}" }}
+
+

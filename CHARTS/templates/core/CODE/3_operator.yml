@@ -1,0 +1,1257 @@
+#3_operator.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secure-namespace-operator-code
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: code
+data:
+  config.py: |
+    #!/usr/bin/env python3
+    """
+    Configuration globale de l'opérateur
+    """
+    import os
+
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
+    # Namespace de l'opérateur
+    OPERATOR_NAMESPACE = os.getenv('OPERATOR_NAMESPACE', 'namespace-operator')
+
+    # CRD piloté par le moteur générique (voir values.yaml::crd) — jamais de group/version/plural
+    # en dur ailleurs dans le code, toujours importer ces constantes depuis config.py
+    CRD_GROUP = os.getenv('CRD_GROUP', 'secure-ns.example.com')
+    CRD_VERSION = os.getenv('CRD_VERSION', 'v1alpha1')
+    CRD_PLURAL = os.getenv('CRD_PLURAL', 'securenamespaces')
+
+    # Intervalle de réconciliation périodique (en secondes)
+    # Configurable via variable d'environnement RECONCILE_INTERVAL_SECONDS
+    # Par défaut: 300 secondes (5 minutes)
+    RECONCILE_INTERVAL_SECONDS = int(os.getenv('RECONCILE_INTERVAL_SECONDS', '300'))
+
+    # Délai initial avant la première réconciliation périodique (en secondes)
+    # Laisse le temps au create handler de terminer avant le premier tick
+    RECONCILE_INITIAL_DELAY_SECONDS = int(os.getenv('RECONCILE_INITIAL_DELAY_SECONDS', '60'))
+
+  crd_manager.py: |
+    #!/usr/bin/env python3
+    """
+    Gestionnaire du CRD SecureNamespace
+    Extraction des defaults et gestion des labels/annotations
+    """
+    import logging
+    import kubernetes
+    from datetime import datetime
+    from config import CRD_GROUP, CRD_VERSION, CRD_PLURAL
+
+    logger = logging.getLogger(__name__)
+
+
+    def get_operator_version():
+        """
+        Récupère la version de l'opérateur depuis son deployment
+        """
+        try:
+            from config import OPERATOR_NAMESPACE
+            apps_v1 = kubernetes.client.AppsV1Api()
+            deployment = apps_v1.read_namespaced_deployment(
+                name='secure-namespace-operator',
+                namespace=OPERATOR_NAMESPACE
+            )
+            return deployment.metadata.labels.get('version', '1.0.0')
+        except Exception as e:
+            logger.warning(f"Impossible de récupérer la version de l'opérateur: {e}")
+            return '1.0.0'
+
+
+    def extract_defaults_from_crd():
+        """
+        Charge le CRD et extrait automatiquement tous les defaults
+        """
+        try:
+            api = kubernetes.client.ApiextensionsV1Api()
+            crd = api.read_custom_resource_definition(name=f'{CRD_PLURAL}.{CRD_GROUP}')
+            
+            # Convertir TOUT en dict dès le début
+            schema_obj = crd.spec.versions[0].schema.open_apiv3_schema
+            schema_dict = schema_obj.to_dict() if hasattr(schema_obj, 'to_dict') else schema_obj
+            
+            # Naviguer vers spec
+            spec_schema = schema_dict.get('properties', {}).get('spec', {})
+            
+            logger.info("Extraction des defaults depuis le CRD...")
+            defaults = extract_defaults_recursive_dict(spec_schema)
+            logger.info(f"Defaults extraits: {defaults}")
+            
+            return defaults if defaults else {}
+        except Exception as e:
+            logger.warning(f"Impossible d'extraire les defaults du CRD: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
+            return {}
+
+
+    def extract_defaults_recursive_dict(schema):
+        """
+        Extrait récursivement les valeurs par défaut d'un schema (format dict)
+        Ignore les valeurs None (pas de default défini)
+        """
+        if not isinstance(schema, dict):
+            return {}
+        
+        # Si ce niveau a directement un default (et que ce n'est pas None)
+        if 'default' in schema and schema['default'] is not None:
+            return schema['default']
+        
+        # Si c'est un objet avec des propriétés
+        if schema.get('type') == 'object' and 'properties' in schema:
+            result = {}
+            
+            for prop_name, prop_schema in schema['properties'].items():
+                # Récurser pour obtenir le default de cette propriété
+                prop_default = extract_defaults_recursive_dict(prop_schema)
+                
+                # Ajouter au résultat seulement si:
+                # - ce n'est pas None
+                # - ce n'est pas un dict vide
+                if prop_default is not None and prop_default != {}:
+                    result[prop_name] = prop_default
+            
+            return result if result else {}
+        
+        return {}
+
+
+    def apply_defaults_to_spec(spec):
+        """
+        Applique les valeurs par défaut du CRD au spec fourni
+        Retourne un spec complet avec toutes les valeurs
+        """
+        from utils import deep_merge
+        defaults = extract_defaults_from_crd()
+        return deep_merge(defaults, spec)
+
+
+    def extract_namespace_info(spec):
+        """
+        Extrait les informations de namespace depuis le spec
+        """
+        solution = spec.get('project', {}).get('solution', 'default')
+        environment = spec.get('project', {}).get('environment', 'dev').lower()
+        
+        # Utiliser namespaceName si fourni, sinon calculer
+        namespace_name = spec.get('namespaceName')
+        if not namespace_name:
+            namespace_name = f"{solution}-{environment}"
+        
+        return solution, environment, namespace_name
+
+
+    def get_common_labels(spec, securenamespace_name, revision):
+        """
+        Génère les labels standards à appliquer sur toutes les ressources
+        """
+        solution, environment, namespace_name = extract_namespace_info(spec)
+        
+        labels = {
+            # Labels standards Kubernetes
+            'app.kubernetes.io/name': solution,
+            'app.kubernetes.io/instance': namespace_name,
+            'app.kubernetes.io/version': str(revision),
+            'app.kubernetes.io/component': 'namespace',
+            'app.kubernetes.io/part-of': solution,
+            'app.kubernetes.io/managed-by': 'secure-namespace-operator',
+            
+            # Labels du domaine CRD (voir values.yaml::crd)
+            f'{CRD_GROUP}/solution': solution,
+            f'{CRD_GROUP}/environment': environment,
+            f'{CRD_GROUP}/managed': 'true',
+            f'{CRD_GROUP}/securenamespace': securenamespace_name,
+            
+            # Labels simples pour requêtes
+            'environment': environment,
+            'solution': solution,
+        }
+        
+        return labels
+
+
+    def get_common_annotations(securenamespace_name, revision):
+        """
+        Génère les annotations standards à appliquer sur toutes les ressources
+        """
+        from config import OPERATOR_NAMESPACE
+        
+        annotations = {
+            # Traçabilité
+            f'{CRD_GROUP}/created-by': 'secure-namespace-operator',
+            f'{CRD_GROUP}/created-at': datetime.utcnow().isoformat() + 'Z',
+            f'{CRD_GROUP}/securenamespace': securenamespace_name,
+            f'{CRD_GROUP}/crd-namespace': OPERATOR_NAMESPACE,
+            f'{CRD_GROUP}/revision': str(revision),
+        }
+        
+        return annotations
+
+
+    def get_owner_references(securenamespace_name, securenamespace_uid):
+        """
+        Génère les ownerReferences pour que les ressources soient supprimées
+        automatiquement quand le SecureNamespace est supprimé
+        """
+        if not securenamespace_uid:
+            return None
+        
+        return [
+            {
+                'apiVersion': f'{CRD_GROUP}/{CRD_VERSION}',
+                'kind': 'SecureNamespace',
+                'name': securenamespace_name,
+                'uid': securenamespace_uid,
+                'blockOwnerDeletion': False,
+                'controller': True
+            }
+        ]
+
+  handlers.py: |
+    #!/usr/bin/env python3
+    """
+    Handlers Kopf pour les événements SecureNamespace
+    """
+
+    import kopf
+    import kubernetes
+    import logging
+    from config import RECONCILE_INTERVAL_SECONDS, RECONCILE_INITIAL_DELAY_SECONDS
+    from config import CRD_GROUP, CRD_VERSION, CRD_PLURAL
+
+    logger = logging.getLogger(__name__)
+
+
+    @kopf.on.create(CRD_GROUP, CRD_VERSION, CRD_PLURAL)
+    def create_secure_namespace(spec, name, namespace, logger, **kwargs):
+        """
+        Appelé lors de la création d'une ressource SecureNamespace
+        """
+        from crd_manager import extract_namespace_info
+        from resource_manager import create_resources_from_templates
+        from revision_manager import add_history_entry_to_configmap
+
+        solution, environment, namespace_name = extract_namespace_info(spec)
+
+        logger.info(f"🚀 CRÉATION du namespace sécurisé")
+        logger.info(f"   SecureNamespace: {name}")
+        logger.info(f"   Namespace K8s: {namespace_name}")
+
+        try:
+            api_client = kubernetes.client.ApiClient()
+            custom_api = kubernetes.client.CustomObjectsApi(api_client)
+
+            resource = custom_api.get_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=name
+            )
+            sns_uid = resource.get('metadata', {}).get('uid', '')
+
+            patch_annotations = {
+                'metadata': {
+                    'annotations': {
+                        f'{CRD_GROUP}/revision': '1',
+                    }
+                }
+            }
+
+            custom_api.patch_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=name,
+                body=patch_annotations
+            )
+            logger.info(f"📊 Révision initialisée à 1")
+
+            result = create_resources_from_templates(api_client, spec, name)
+
+            creation_diff = [('add', ('spec',), 'SecureNamespace created')]
+            add_history_entry_to_configmap(
+                api_client,
+                name,
+                sns_uid,
+                creation_diff,
+                1,
+                spec_data=spec,
+                status=result,
+                logger_obj=logger
+            )
+
+            logger.info(f"✅ Namespace {namespace_name} créé avec succès")
+
+            return {
+                'namespaceName': namespace_name,
+                'secureNamespace': name,
+                'solution': solution,
+                'environment': environment,
+                'state': 'Ready',
+                'message': f'Namespace créé ({result["succeeded"]} réussi, {result["failed_count"]} erreur)',
+                'createdResources': result['created'],
+                'failedResources': result['failed']
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la création: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise kopf.PermanentError(f"Impossible de créer le namespace: {e}")
+
+
+    @kopf.on.update(CRD_GROUP, CRD_VERSION, CRD_PLURAL, field='spec')
+    def update_secure_namespace(spec, name, namespace, old, new, diff, logger, **kwargs):
+        """
+        Appelé UNIQUEMENT lors du changement de spec
+        """
+        from crd_manager import extract_namespace_info
+        from resource_manager import create_resources_from_templates
+        from revision_manager import add_history_entry_to_configmap
+
+        solution, environment, namespace_name = extract_namespace_info(spec)
+
+        logger.info(f"🔄 MISE À JOUR du namespace sécurisé")
+        logger.info(f"   SecureNamespace: {name}")
+        logger.info(f"   Namespace K8s: {namespace_name}")
+        logger.info(f"   Changements: {len(diff)} modification(s)")
+
+        for change in diff:
+            logger.info(f"      Diff: {change}")
+
+        try:
+            if not diff or len(diff) == 0:
+                logger.info("✅ Aucun changement dans le spec")
+                return
+
+            logger.info("🔄 Le spec a changé, mise à jour en cours")
+
+            api_client = kubernetes.client.ApiClient()
+            custom_api = kubernetes.client.CustomObjectsApi(api_client)
+
+            resource = custom_api.get_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=name
+            )
+
+            sns_uid = resource.get('metadata', {}).get('uid', '')
+            current_revision = int(resource.get('metadata', {}).get('annotations', {}).get(f'{CRD_GROUP}/revision', '0'))
+            new_revision = current_revision + 1
+
+            logger.info(f"📊 Révision: {current_revision} → {new_revision}")
+
+            patch_revision = {
+                'metadata': {
+                    'annotations': {
+                        f'{CRD_GROUP}/revision': str(new_revision),
+                    }
+                }
+            }
+
+            custom_api.patch_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=name,
+                body=patch_revision
+            )
+
+            result = create_resources_from_templates(api_client, spec, name)
+
+            add_history_entry_to_configmap(
+                api_client,
+                name,
+                sns_uid,
+                diff,
+                new_revision,
+                spec_data=spec,
+                status=result,
+                logger_obj=logger
+            )
+
+            logger.info(f"✅ Namespace {namespace_name} mis à jour avec succès")
+            logger.info(f"Résultat: {result['succeeded']} réussi(s); {result['failed_count']} erreur(s)")
+
+            return {
+                'namespaceName': namespace_name,
+                'secureNamespace': name,
+                'state': 'Ready',
+                'message': f"Namespace mis à jour ({result['succeeded']} réussi, {result['failed_count']} erreur)",
+                'updatedResources': result['created'],
+                'failedResources': result['failed']
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la mise à jour: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise kopf.PermanentError(f"Impossible de mettre à jour le namespace: {e}")
+
+
+    @kopf.on.timer(
+        CRD_GROUP, CRD_VERSION, CRD_PLURAL,
+        interval=RECONCILE_INTERVAL_SECONDS,
+        initial_delay=RECONCILE_INITIAL_DELAY_SECONDS,
+        idle=RECONCILE_INTERVAL_SECONDS
+    )
+    def reconcile_secure_namespace(spec, name, namespace, logger, **kwargs):
+        """
+        Réconciliation périodique pour corriger toute dérive (drift).
+
+        Ce handler est exécuté automatiquement par Kopf à intervalle régulier
+        pour CHAQUE ressource SecureNamespace existante.
+
+        Il réapplique tous les templates, ce qui permet de :
+        - Recréer des ressources supprimées manuellement
+        - Corriger des modifications manuelles non conformes
+        - Garantir la convergence vers l'état désiré
+
+        Comme apply_resource utilise patch (idempotent), les ressources
+        déjà conformes ne sont pas modifiées inutilement.
+        """
+        from crd_manager import extract_namespace_info
+        from resource_manager import create_resources_from_templates
+
+        solution, environment, namespace_name = extract_namespace_info(spec)
+
+        logger.info(f"🔄 RÉCONCILIATION PÉRIODIQUE pour {name}")
+        logger.info(f"   Namespace K8s: {namespace_name}")
+        logger.info(f"   Intervalle: {RECONCILE_INTERVAL_SECONDS}s")
+
+        try:
+            api_client = kubernetes.client.ApiClient()
+
+            result = create_resources_from_templates(api_client, spec, name)
+
+            if result['failed_count'] > 0:
+                logger.warning(
+                    f"⚠️  Réconciliation terminée avec erreurs: "
+                    f"{result['succeeded']} réussi(s), {result['failed_count']} erreur(s)"
+                )
+                for failure in result['failed']:
+                    logger.warning(f"   ❌ {failure.get('kind', 'N/A')}/{failure.get('name', 'N/A')}: {failure.get('reason', 'N/A')}")
+            else:
+                logger.info(
+                    f"✅ Réconciliation terminée: {result['succeeded']} ressource(s) synchronisée(s)"
+                )
+
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la réconciliation périodique: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise kopf.TemporaryError(
+                f"Réconciliation échouée, nouvelle tentative dans {RECONCILE_INTERVAL_SECONDS}s: {e}",
+                delay=RECONCILE_INTERVAL_SECONDS
+            )
+
+
+    @kopf.on.delete(CRD_GROUP, CRD_VERSION, CRD_PLURAL)
+    def delete_secure_namespace(spec, name, status, logger, **kwargs):
+        """
+        Appelé quand une ressource SecureNamespace est supprimée
+        """
+        from crd_manager import extract_namespace_info
+        from revision_manager import add_history_entry_to_configmap
+
+        solution, environment, namespace_name = extract_namespace_info(spec)
+
+        logger.info(f"🗑️  SUPPRESSION du namespace: {namespace_name}")
+
+        try:
+            api_client = kubernetes.client.ApiClient()
+            custom_api = kubernetes.client.CustomObjectsApi(api_client)
+
+            try:
+                resource = custom_api.get_cluster_custom_object(
+                    group=CRD_GROUP,
+                    version=CRD_VERSION,
+                    plural=CRD_PLURAL,
+                    name=name
+                )
+                sns_uid = resource.get('metadata', {}).get('uid', '')
+                current_revision = int(resource.get('metadata', {}).get('annotations', {}).get(f'{CRD_GROUP}/revision', '1'))
+            except Exception:
+                sns_uid = ''
+                current_revision = 1
+
+            deletion_diff = [('remove', ('spec',), 'SecureNamespace deleted')]
+            add_history_entry_to_configmap(
+                api_client,
+                name,
+                sns_uid,
+                deletion_diff,
+                current_revision + 1,
+                spec_data={'status': 'deleted'},
+                logger_obj=logger
+            )
+
+            logger.info(f"📝 Suppression enregistrée dans l'historique")
+
+            dyn_client = kubernetes.dynamic.DynamicClient(api_client)
+
+            try:
+                ns_api = dyn_client.resources.get(api_version='v1', kind='Namespace')
+                ns_api.delete(name=namespace_name)
+                logger.info(f"✅ Namespace {namespace_name} supprimé")
+            except Exception as e:
+                if "not found" not in str(e).lower():
+                    logger.warning(f"⚠️  Erreur suppression namespace: {e}")
+
+            from config import OPERATOR_NAMESPACE
+            logger.info(f"✅ Ressources supprimées, historique conservé dans {OPERATOR_NAMESPACE}/{name}-history")
+
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la suppression: {e}")
+            logger.warning(f"⚠️  Suppression partielle, finalizer retiré quand même")
+
+  operator.py: |
+    #!/usr/bin/env python3
+    """
+    Secure Namespace Operator - Point d'entrée principal
+    Version modulaire avec séparation des responsabilités
+    """
+    import logging
+    import kopf
+    import kubernetes
+    import os
+    import sys
+
+    # Ajouter le répertoire courant au PYTHONPATH
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+    # Imports des modules - AVANT la configuration du logging pour que config.py soit accessible
+    from config import OPERATOR_NAMESPACE, RECONCILE_INTERVAL_SECONDS, RECONCILE_INITIAL_DELAY_SECONDS, LOG_LEVEL
+    from crd_manager import get_operator_version
+    import handlers  # Importe les handlers Kopf (enregistre les décorateurs @kopf.on.*)
+
+    # Configuration du logging
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+
+    logger.info("🤖 Démarrage du Secure Namespace Operator")
+    logger.info(f"   Namespace de l'opérateur: {OPERATOR_NAMESPACE}")
+    logger.info(f"   Version de l'opérateur: {get_operator_version()}")
+    logger.info(f"   Log level: {LOG_LEVEL}")
+    logger.info(f"   Réconciliation périodique: toutes les {RECONCILE_INTERVAL_SECONDS}s")
+    logger.info(f"   Délai initial réconciliation: {RECONCILE_INITIAL_DELAY_SECONDS}s")
+    logger.info("   Architecture modulaire:")
+    logger.info("      - config.py: Configuration globale")
+    logger.info("      - utils.py: Utilitaires génériques")
+    logger.info("      - crd_manager.py: Gestion CRD et defaults")
+    logger.info("      - template_manager.py: Rendu des templates")
+    logger.info("      - resource_manager.py: Application des ressources")
+    logger.info("      - revision_manager.py: Gestion révisions et historique")
+    logger.info("      - handlers.py: Handlers Kopf (@on.create, @on.update, @on.timer, @on.delete)")
+
+
+  resource_manager.py: |
+    #!/usr/bin/env python3
+    """
+    Gestionnaire de ressources Kubernetes
+    Application et suppression génériques
+    """
+    import logging
+    import yaml
+    import kubernetes
+    import kubernetes.dynamic
+    from config import CRD_GROUP, CRD_VERSION, CRD_PLURAL
+
+    logger = logging.getLogger(__name__)
+
+
+    def apply_resource(api_client, resource, securenamespace_name=None, securenamespace_uid=None, logger_obj=None):
+        """
+        Applique une ressource Kubernetes (create ou update) de manière générique
+        """
+        try:
+            kind = resource.get('kind')
+            api_version = resource.get('apiVersion', 'v1')
+            metadata = resource.get('metadata', {})
+            name = metadata.get('name')
+            namespace = metadata.get('namespace')
+
+            if not kind or not name:
+                if logger_obj:
+                    logger_obj.warning(f"Ressource invalide: kind={kind}, name={name}")
+                return False
+
+            if '_action' in resource:
+                del resource['_action']
+
+            if securenamespace_uid and securenamespace_name and kind != 'Namespace':
+                from crd_manager import get_owner_references
+                if 'ownerReferences' not in metadata:
+                    metadata['ownerReferences'] = []
+
+                owner_exists = any(
+                    ref.get('uid') == securenamespace_uid
+                    for ref in metadata.get('ownerReferences', [])
+                )
+
+                if not owner_exists:
+                    owner_refs = get_owner_references(securenamespace_name, securenamespace_uid)
+                    if owner_refs:
+                        metadata['ownerReferences'] = owner_refs
+                        resource['metadata'] = metadata
+
+            dyn_client = kubernetes.dynamic.DynamicClient(api_client)
+            api_resource = dyn_client.resources.get(api_version=api_version, kind=kind)
+            is_namespaced = api_resource.namespaced
+
+            try:
+                if is_namespaced:
+                    api_resource.patch(body=resource, name=name, namespace=namespace, content_type='application/merge-patch+json')
+                else:
+                    api_resource.patch(body=resource, name=name, content_type='application/merge-patch+json')
+                if logger_obj:
+                    logger_obj.debug(f"Ressource appliquée (patch): {api_version}/{kind}/{name}")
+
+            except kubernetes.dynamic.exceptions.NotFoundError:
+                if is_namespaced:
+                    api_resource.create(body=resource, namespace=namespace)
+                else:
+                    api_resource.create(body=resource)
+                if logger_obj:
+                    logger_obj.debug(f"Ressource créée: {api_version}/{kind}/{name}")
+
+            return True
+
+        except Exception as e:
+            if logger_obj:
+                logger_obj.error(f"Erreur lors de l'application de {resource.get('kind')}/{resource.get('metadata', {}).get('name')}: {e}")
+            raise
+
+
+    def delete_resource(api_client, resource, logger_obj=None):
+        """
+        Supprime une ressource Kubernetes de manière générique
+        """
+        try:
+            dyn_client = kubernetes.dynamic.DynamicClient(api_client)
+
+            kind = resource.get('kind')
+            api_version = resource.get('apiVersion', 'v1')
+            metadata = resource.get('metadata', {})
+            name = metadata.get('name')
+            namespace = metadata.get('namespace')
+
+            if not kind or not name:
+                if logger_obj:
+                    logger_obj.warning(f"Ressource invalide pour suppression: kind={kind}, name={name}")
+                return False
+
+            try:
+                api_resource = dyn_client.resources.get(api_version=api_version, kind=kind)
+            except Exception as e:
+                if logger_obj:
+                    logger_obj.warning(f"Impossible de trouver la ressource {api_version}/{kind}: {e}")
+                return False
+
+            is_namespaced = api_resource.namespaced
+
+            if logger_obj:
+                logger_obj.info(f"Suppression de {api_version}/{kind}/{name}")
+
+            try:
+                if is_namespaced:
+                    api_resource.delete(name=name, namespace=namespace)
+                else:
+                    api_resource.delete(name=name)
+                if logger_obj:
+                    logger_obj.debug(f"Ressource supprimée: {api_version}/{kind}/{name}")
+                return True
+
+            except kubernetes.dynamic.exceptions.NotFoundError:
+                if logger_obj:
+                    logger_obj.info(f"Ressource déjà supprimée: {api_version}/{kind}/{name}")
+                return True
+
+        except Exception as e:
+            if logger_obj:
+                logger_obj.error(f"Erreur lors de la suppression de {resource.get('kind')}/{resource.get('metadata', {}).get('name')}: {e}")
+            raise
+
+
+    def create_resources_from_templates(api_client, spec, securenamespace_name):
+        """
+        Crée toutes les ressources définies dans les templates
+        """
+        from datetime import datetime
+        from template_manager import load_templates, load_templates_order, render_template, get_template_values
+        from revision_manager import get_revision_number
+        from crd_manager import extract_namespace_info
+
+        solution, environment, namespace_name = extract_namespace_info(spec)
+        revision = get_revision_number(api_client, securenamespace_name)
+
+        logger.info(f"📦 Création des ressources pour le namespace: {namespace_name}")
+        logger.info(f"   SecureNamespace: {securenamespace_name}")
+        logger.info(f"   Révision: {revision}")
+
+        custom_api = kubernetes.client.CustomObjectsApi(api_client)
+        try:
+            resource = custom_api.get_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=securenamespace_name
+            )
+            securenamespace_uid = resource.get('metadata', {}).get('uid', '')
+        except Exception as e:
+            logger.warning(f"Impossible de récupérer l'UID du SecureNamespace: {e}")
+            securenamespace_uid = ''
+
+        templates_to_apply = load_templates_order()
+        if not templates_to_apply:
+            logger.error("❌ Aucun template à appliquer (ordre vide)")
+            return {'created': [], 'failed': [], 'succeeded': 0, 'failed_count': 0, 'total': 0}
+
+        templates = load_templates(templates_to_apply)
+        if not templates:
+            logger.error("❌ Aucun template chargé")
+            return {'created': [], 'failed': [], 'succeeded': 0, 'failed_count': 0, 'total': 0}
+
+        template_values = get_template_values(spec, securenamespace_name, revision)
+
+        created_resources = []
+        failed_resources = []
+
+        for template_key in templates_to_apply:
+            try:
+                logger.info(f"   📄 Traitement du template: {template_key}")
+
+                if template_key not in templates:
+                    logger.warning(f"   ⚠️  Template '{template_key}' non trouvé")
+                    failed_resources.append({'template': template_key, 'reason': 'Template not found', 'timestamp': datetime.utcnow().isoformat() + 'Z'})
+                    continue
+
+                template_content = templates[template_key]
+
+                if not template_content or not isinstance(template_content, str):
+                    logger.warning(f"   ⚠️  Contenu invalide pour '{template_key}'")
+                    failed_resources.append({'template': template_key, 'reason': 'Invalid content', 'timestamp': datetime.utcnow().isoformat() + 'Z'})
+                    continue
+
+                rendered = render_template(template_content, template_values)
+                documents = list(yaml.safe_load_all(rendered))
+
+                for doc in documents:
+                    if not doc:
+                        continue
+
+                    if doc.get('_action') == 'delete':
+                        try:
+                            delete_resource(api_client, doc, logger_obj=logger)
+                        except Exception as e:
+                            logger.error(f"   ❌ Erreur suppression de {doc.get('kind')}/{doc.get('metadata', {}).get('name')}: {e}")
+                            failed_resources.append({
+                                'kind': doc.get('kind'),
+                                'name': doc.get('metadata', {}).get('name'),
+                                'action': 'delete',
+                                'reason': str(e),
+                                'timestamp': datetime.utcnow().isoformat() + 'Z'
+                            })
+                        continue
+
+                    if 'metadata' not in doc:
+                        doc['metadata'] = {}
+                    if 'labels' not in doc['metadata']:
+                        doc['metadata']['labels'] = {}
+                    if 'annotations' not in doc['metadata']:
+                        doc['metadata']['annotations'] = {}
+
+                    doc['metadata']['labels'].update(template_values['labels'])
+                    doc['metadata']['annotations'].update(template_values['annotations'])
+
+                    try:
+                        apply_resource(api_client, doc, securenamespace_name, securenamespace_uid, logger_obj=logger)
+                        resource_key = f"{doc.get('apiVersion', 'v1')}/{doc['kind']}/{doc['metadata']['name']}"
+                        created_resources.append(resource_key)
+                        logger.info(f"      ✅ {resource_key}")
+
+                    except Exception as e:
+                        logger.error(f"      ❌ Erreur: {e}")
+                        failed_resources.append({
+                            'kind': doc.get('kind'),
+                            'name': doc.get('metadata', {}).get('name'),
+                            'reason': str(e),
+                            'timestamp': datetime.utcnow().isoformat() + 'Z'
+                        })
+
+            except Exception as e:
+                logger.error(f"   ❌ Erreur avec '{template_key}': {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                failed_resources.append({'template': template_key, 'reason': str(e), 'timestamp': datetime.utcnow().isoformat() + 'Z'})
+                continue
+
+        success_count = len(created_resources)
+        failure_count = len(failed_resources)
+        total = success_count + failure_count
+
+        logger.info(f"✅ {success_count}/{total} ressources créées/mises à jour")
+        if failure_count > 0:
+            logger.warning(f"❌ {failure_count} erreur(s) rencontrée(s)")
+
+        return {
+            'created': created_resources,
+            'failed': failed_resources,
+            'succeeded': success_count,
+            'failed_count': failure_count,
+            'total': total
+        }
+
+  revision_manager.py: |
+    #!/usr/bin/env python3
+    """
+    Gestionnaire de révisions et d'historique
+    """
+    import logging
+    import json
+    import kubernetes
+    from datetime import datetime
+    from config import CRD_GROUP, CRD_VERSION, CRD_PLURAL
+
+    logger = logging.getLogger(__name__)
+
+
+    def get_revision_number(api_client, securenamespace_name):
+        """
+        Récupère le numéro de révision SANS l'incrémenter
+        """
+        try:
+            custom_api = kubernetes.client.CustomObjectsApi(api_client)
+            resource = custom_api.get_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=securenamespace_name
+            )
+            current_revision = resource.get('metadata', {}).get('annotations', {}).get(f'{CRD_GROUP}/revision', '0')
+            logger.info(f"📊 Révision actuelle: {current_revision}")
+            return int(current_revision)
+        except Exception as e:
+            logger.warning(f"Impossible de récupérer la révision: {e}")
+            return 0
+
+
+    def increment_revision(api_client, securenamespace_name):
+        """
+        Incrémente simplement la révision lors d'une mise à jour
+        """
+        try:
+            custom_api = kubernetes.client.CustomObjectsApi(api_client)
+            resource = custom_api.get_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=securenamespace_name
+            )
+            current_revision = int(resource.get('metadata', {}).get('annotations', {}).get(f'{CRD_GROUP}/revision', '0'))
+            new_revision = current_revision + 1
+            logger.info(f"📊 Incrémentation révision: {current_revision} → {new_revision}")
+            patch = {'metadata': {'annotations': {f'{CRD_GROUP}/revision': str(new_revision)}}}
+            custom_api.patch_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_PLURAL,
+                name=securenamespace_name,
+                body=patch
+            )
+            logger.info(f"✅ Révision mise à jour: {new_revision}")
+            return new_revision
+        except Exception as e:
+            logger.warning(f"Impossible d'incrémenter la révision: {e}")
+            return None
+
+
+    def add_history_entry_to_configmap(api_client, securenamespace_name, securenamespace_uid, diff, revision, spec_data=None, status=None, logger_obj=None):
+        """
+        Ajoute une entrée d'historique dans une ConfigMap dédiée
+        """
+        try:
+            from config import OPERATOR_NAMESPACE
+            from utils import format_diff_entry, format_history_text, get_history_configmap_name, spec_to_dict
+
+            v1 = kubernetes.client.CoreV1Api(api_client)
+            timestamp = datetime.utcnow().isoformat() + 'Z'
+
+            changes = []
+            for change in diff:
+                formatted_change = format_diff_entry(change)
+                if formatted_change:
+                    changes.append(formatted_change)
+
+            history_entry = {
+                'timestamp': timestamp,
+                'revision': revision,
+                'changes': changes,
+                'changeCount': len(changes)
+            }
+
+            if status:
+                history_entry['status'] = {
+                    'succeeded': status.get('succeeded', 0),
+                    'failed': status.get('failed_count', 0),
+                    'total': status.get('total', 0),
+                    'errors': status.get('failed', [])
+                }
+
+            if spec_data:
+                history_entry['spec'] = spec_to_dict(spec_data)
+
+            configmap_name = get_history_configmap_name(securenamespace_name)
+            configmap = None
+            history = []
+
+            try:
+                configmap = v1.read_namespaced_config_map(name=configmap_name, namespace=OPERATOR_NAMESPACE)
+                if configmap.metadata.owner_references:
+                    if logger_obj:
+                        logger_obj.info(f"🔧 Suppression des ownerReferences du ConfigMap historique")
+                    configmap.metadata.owner_references = None
+                history_json = configmap.data.get('history.json', '[]')
+                history = json.loads(history_json)
+            except kubernetes.client.exceptions.ApiException as e:
+                if e.status == 404:
+                    history = []
+                else:
+                    raise
+
+            history.append(history_entry)
+            if len(history) > 100:
+                history = history[-100:]
+
+            config_data = {
+                'history.json': json.dumps(history, indent=2),
+                'history.txt': format_history_text(history)
+            }
+
+            if configmap:
+                configmap.data = config_data
+                v1.patch_namespaced_config_map(name=configmap_name, namespace=OPERATOR_NAMESPACE, body=configmap)
+            else:
+                new_configmap = kubernetes.client.V1ConfigMap(
+                    metadata=kubernetes.client.V1ObjectMeta(
+                        name=configmap_name,
+                        namespace=OPERATOR_NAMESPACE,
+                        labels={
+                            'app.kubernetes.io/name': securenamespace_name,
+                            'app.kubernetes.io/component': 'history',
+                            'app.kubernetes.io/managed-by': 'secure-namespace-operator',
+                            f'{CRD_GROUP}/securenamespace': securenamespace_name,
+                        },
+                    ),
+                    data=config_data
+                )
+                v1.create_namespaced_config_map(namespace=OPERATOR_NAMESPACE, body=new_configmap)
+
+            if logger_obj:
+                logger_obj.info(f"📝 Historique enregistré dans ConfigMap {configmap_name}")
+                if status and status.get('failed_count', 0) > 0:
+                    logger_obj.warning(f"   {status['succeeded']} réussi(s), {status['failed_count']} erreur(s)")
+
+            return True
+
+        except Exception as e:
+            if logger_obj:
+                logger_obj.warning(f"Impossible d'enregistrer l'historique: {e}")
+            return False
+
+  template_manager.py: |
+    #!/usr/bin/env python3
+    """
+    Gestionnaire de templates Jinja2 multi-ConfigMap
+    """
+    import logging
+    import yaml
+    import kubernetes
+    from jinja2 import Environment, BaseLoader
+
+    logger = logging.getLogger(__name__)
+
+
+    def load_templates_order():
+        """
+        Charge l'ordre d'exécution des templates depuis le ConfigMap dédié
+        Retourne une liste de clés au format 'configmap/template-key'
+        """
+        try:
+            from config import OPERATOR_NAMESPACE
+            
+            v1 = kubernetes.client.CoreV1Api()
+            config_map = v1.read_namespaced_config_map(
+                name='secure-namespace-operator-templates-order',
+                namespace=OPERATOR_NAMESPACE
+            )
+            
+            templates_order_yaml = config_map.data.get('templates-order.yaml')
+            if not templates_order_yaml:
+                logger.error("❌ 'templates-order.yaml' introuvable dans le ConfigMap")
+                return []
+            
+            templates_order_doc = yaml.safe_load(templates_order_yaml)
+            templates_list = templates_order_doc.get('templates', [])
+            
+            logger.info(f"✅ Ordre de templates chargé: {len(templates_list)} templates")
+            logger.debug(f"   Templates à appliquer: {templates_list}")
+            return templates_list
+            
+        except kubernetes.client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.error("❌ ConfigMap 'secure-namespace-operator-templates-order' non trouvé")
+            else:
+                logger.error(f"❌ Impossible de charger l'ordre des templates: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+        except Exception as e:
+            logger.error(f"❌ Impossible de charger l'ordre des templates: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+
+
+    def load_templates(templates_list):
+        """
+        Charge les templates depuis PLUSIEURS ConfigMaps
+        en se basant sur la liste fournie au format 'configmap/key'
+        
+        Args:
+            templates_list: Liste au format ['templates-core/namespace.yaml', ...]
+        
+        Retourne un dict: {'configmap/key': 'template_content'}
+        """
+        try:
+            from config import OPERATOR_NAMESPACE
+            v1 = kubernetes.client.CoreV1Api()
+            
+            templates = {}
+            configmaps_cache = {}  # Cache pour éviter de charger plusieurs fois le même ConfigMap
+            
+            for template_key in templates_list:
+                try:
+                    # Parser le template_key: 'configmap-name/template-file.yaml'
+                    if '/' not in template_key:
+                        logger.warning(f"   ⚠️  Format invalide pour '{template_key}' (attendu: configmap/file)")
+                        continue
+                    
+                    cm_name, file_key = template_key.split('/', 1)
+                    
+                    # Charger le ConfigMap (avec cache)
+                    if cm_name not in configmaps_cache:
+                        try:
+                            config_map = v1.read_namespaced_config_map(
+                                name=cm_name,
+                                namespace=OPERATOR_NAMESPACE
+                            )
+                            configmaps_cache[cm_name] = config_map.data or {}
+                            logger.debug(f"   📦 ConfigMap '{cm_name}' chargé")
+                        except kubernetes.client.exceptions.ApiException as e:
+                            if e.status == 404:
+                                logger.warning(f"   ⚠️  ConfigMap '{cm_name}' non trouvé")
+                                configmaps_cache[cm_name] = {}
+                            else:
+                                raise
+                    
+                    # Récupérer le template depuis le cache
+                    cm_data = configmaps_cache[cm_name]
+                    if file_key in cm_data:
+                        templates[template_key] = cm_data[file_key]
+                        logger.debug(f"   ✅ Template chargé: {template_key}")
+                    else:
+                        logger.warning(f"   ⚠️  Fichier '{file_key}' non trouvé dans ConfigMap '{cm_name}'")
+                        logger.debug(f"      Fichiers disponibles: {list(cm_data.keys())}")
+                
+                except Exception as e:
+                    logger.error(f"   ❌ Erreur chargement '{template_key}': {e}")
+                    continue
+            
+            logger.info(f"✅ {len(templates)}/{len(templates_list)} templates chargés depuis {len(configmaps_cache)} ConfigMaps")
+            return templates
+            
+        except Exception as e:
+            logger.error(f"❌ Impossible de charger les templates: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {}
+
+
+    def render_template(template_content, values):
+        """
+        Render un template Jinja2 avec les valeurs données
+        ⭐ MODIFICATION: Utilise des délimiteurs personnalisés [{ }] et [% %]
+        """
+        env = Environment(
+            loader=BaseLoader(),
+            variable_start_string='[{',
+            variable_end_string='}]',
+            block_start_string='[%',
+            block_end_string='%]',
+            comment_start_string='[#',
+            comment_end_string='#]'
+        )
+        template = env.from_string(template_content)
+        rendered = template.render(**values)
+        return rendered
+
+
+
+    def get_template_values(spec, securenamespace_name, revision):
+        """
+        Construit le dictionnaire de valeurs pour le rendu des templates
+        """
+        from config import OPERATOR_NAMESPACE
+        from crd_manager import (
+            extract_namespace_info, 
+            get_common_labels, 
+            get_common_annotations,
+            apply_defaults_to_spec
+        )
+        
+        solution, environment, namespace_name = extract_namespace_info(spec)
+        complete_spec = apply_defaults_to_spec(spec)
+        
+        common_labels = get_common_labels(spec, securenamespace_name, revision)
+        common_annotations = get_common_annotations(securenamespace_name, revision)
+        
+        # Construire le domaine de manière sûre
+        ingress_config = complete_spec.get('ingress', {})
+        ingress_domain = ingress_config.get('domain', '')
+        
+        if ingress_domain:
+            domain = f"{environment}.{solution}.{ingress_domain}"
+        else:
+            domain = f"{environment}.{solution}.local"
+        
+        return {
+            'spec': complete_spec,
+            'solution': solution,
+            'environment': environment,
+            'namespace_name': namespace_name,
+            'securenamespace_name': securenamespace_name,
+            'operator_namespace': OPERATOR_NAMESPACE,
+            'revision': revision,
+            'labels': common_labels,
+            'annotations': common_annotations,
+            'domain': domain,
+        }
+
+  utils.py: |
+    #!/usr/bin/env python3
+    """
+    Utilitaires génériques pour l'opérateur
+    """
+    import logging
+    import json
+    from datetime import datetime
+
+    logger = logging.getLogger(__name__)
+
+
+    def deep_merge(base, override):
+        """
+        Merge récursif de deux dictionnaires
+        Les valeurs de 'override' écrasent celles de 'base'
+        """
+        result = base.copy()
+        
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = deep_merge(result[key], value)
+            else:
+                result[key] = value
+        
+        return result
+
+
+    def spec_to_dict(spec):
+        """
+        Convertit un objet spec Kubernetes en dictionnaire Python sérialisable en JSON
+        """
+        if isinstance(spec, dict):
+            return spec
+        
+        # Si c'est un objet Kubernetes, le convertir
+        if hasattr(spec, 'to_dict'):
+            return spec.to_dict()
+        
+        # Sinon utiliser json pour sérialiser/désérialiser
+        try:
+            return json.loads(json.dumps(spec, default=str))
+        except:
+            return {'error': 'Impossible de convertir le spec'}
+
+
+    def format_diff_entry(diff):
+        """
+        Convertit un tuple diff kopf en dictionnaire lisible
+        """
+        if not diff or len(diff) < 3:
+            return None
+        
+        change_type = diff[0]
+        path_tuple = diff[1] if isinstance(diff[1], tuple) else (diff[1],)
+        
+        formatted = {
+            'type': change_type,
+            'path': 'spec.' + '.'.join(str(p) for p in path_tuple),
+        }
+        
+        if change_type == 'change' and len(diff) >= 4:
+            formatted['oldValue'] = diff[2]
+            formatted['newValue'] = diff[3]
+        elif change_type == 'add' and len(diff) >= 3:
+            formatted['newValue'] = diff[2]
+        elif change_type == 'remove' and len(diff) >= 3:
+            formatted['oldValue'] = diff[2]
+        
+        return formatted
+
+
+    def format_history_text(history):
+        """
+        Formate l'historique en texte lisible pour la ConfigMap
+        """
+        lines = ["# Historique des changements", ""]
+        
+        for entry in reversed(history[-20:]):  # 20 dernières entrées
+            timestamp = entry.get('timestamp', 'N/A')
+            revision = entry.get('revision', 'N/A')
+            change_count = entry.get('changeCount', 0)
+            lines.append(f"## [{timestamp}] Révision {revision} ({change_count} changement(s))")
+            
+            for change in entry.get('changes', []):
+                path = change.get('path', 'unknown')
+                if 'oldValue' in change and 'newValue' in change:
+                    old = change['oldValue']
+                    new = change['newValue']
+                    lines.append(f"  - {path}: {old} → {new}")
+                elif 'newValue' in change:
+                    lines.append(f"  - {path}: +{change['newValue']}")
+                elif 'oldValue' in change:
+                    lines.append(f"  - {path}: -{change['oldValue']}")
+            
+            lines.append("")
+        
+        return "\n".join(lines)
+
+
+    def get_history_configmap_name(securenamespace_name):
+        """
+        Génère le nom du ConfigMap d'historique
+        """
+        return f"{securenamespace_name}-history"      

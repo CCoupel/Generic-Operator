@@ -1,0 +1,154 @@
+# =========================================================================
+# ClusterPolicy: Auto-assign IngressClass for SecureNamespaces
+# =========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: auto-assign-ingressclass-securenamespace
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kyverno-policy
+  annotations:
+    policies.kyverno.io/title: Auto-assign IngressClass for SecureNamespaces
+    policies.kyverno.io/description: |
+      Assigne automatiquement ingressClassName = nom du namespace
+      pour les Ingress dans les namespaces managés ({{ .Values.crd.group }}/managed=true).
+spec:
+  background: true
+  rules:
+    - name: set-ingressclass-from-namespace
+      match:
+        any:
+        - resources:
+            kinds:
+              - Ingress
+            namespaceSelector:
+              matchLabels:
+                {{ .Values.crd.group }}/managed: "true"
+      preconditions:
+        all:
+        - key: "{{ "{{" }} request.object.spec.ingressClassName || '' {{ "}}" }}"
+          operator: Equals
+          value: ""
+      mutate:
+        patchStrategicMerge:
+          spec:
+            ingressClassName: "{{ "{{" }} request.namespace {{ "}}" }}"
+          metadata:
+            annotations:
+              {{ .Values.crd.group }}/auto-assigned-ingressclass: "true"
+---
+# =========================================================================
+# ClusterPolicy: Mutation - Complète les hosts simples en FQDN interne
+#
+# Un host "simple" (sans point) est interprété comme un host interne
+# et complété en : <host>.<environment>.<solution>.<dnsDomain>
+# =========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: mutate-ingress-complete-hostname
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kyverno-policy
+  annotations:
+    policies.kyverno.io/title: Complete Simple Hostname to Internal FQDN
+    policies.kyverno.io/category: Networking
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Transforme les hosts simples (sans point) en FQDN interne complet.
+      Exemple: 'api' devient 'api.<environment>.<solution>.<dnsDomain>'
+      Ne s'applique qu'aux namespaces managés ({{ .Values.crd.group }}/managed=true).
+      Les hosts contenant déjà un point ne sont pas modifiés.
+spec:
+  rules:
+    - name: complete-simple-host-in-rules
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchLabels:
+                  {{ .Values.crd.group }}/managed: "true"
+                matchExpressions:
+                  - key: {{ .Values.crd.group }}/environment
+                    operator: Exists
+                  - key: {{ .Values.crd.group }}/solution
+                    operator: Exists
+      context:
+        - name: nsLabels
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ "{{" }} request.namespace {{ "}}" }}"
+            jmesPath: "metadata.labels"
+        - name: environment
+          variable:
+            jmesPath: "nsLabels.\"{{ .Values.crd.group }}/environment\""
+        - name: solution
+          variable:
+            jmesPath: "nsLabels.\"{{ .Values.crd.group }}/solution\""
+      mutate:
+        foreach:
+          - list: "request.object.spec.rules[]"
+            preconditions:
+              all:
+                - key: "{{ "{{" }} contains(element.host, '.') {{ "}}" }}"
+                  operator: Equals
+                  value: false
+            patchesJson6902: |-
+              - op: replace
+                path: /spec/rules/{{ "{{" }} elementIndex {{ "}}" }}/host
+                value: "{{ "{{" }} element.host {{ "}}" }}.{{ "{{" }} environment {{ "}}" }}.{{ "{{" }} solution {{ "}}" }}.{{ .Values.dnsDomain }}"
+
+    - name: complete-simple-host-in-tls
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchLabels:
+                  {{ .Values.crd.group }}/managed: "true"
+                matchExpressions:
+                  - key: {{ .Values.crd.group }}/environment
+                    operator: Exists
+                  - key: {{ .Values.crd.group }}/solution
+                    operator: Exists
+      preconditions:
+        all:
+          - key: "{{ "{{" }} request.object.spec.tls || `[]` | length(@) {{ "}}" }}"
+            operator: GreaterThan
+            value: 0
+      context:
+        - name: nsLabels
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ "{{" }} request.namespace {{ "}}" }}"
+            jmesPath: "metadata.labels"
+        - name: environment
+          variable:
+            jmesPath: "nsLabels.\"{{ .Values.crd.group }}/environment\""
+        - name: solution
+          variable:
+            jmesPath: "nsLabels.\"{{ .Values.crd.group }}/solution\""
+      mutate:
+        foreach:
+          - list: "request.object.spec.tls[]"
+            foreach:
+              - list: "element.hosts[]"
+                preconditions:
+                  all:
+                    - key: "{{ "{{" }} contains(element, '.') {{ "}}" }}"
+                      operator: Equals
+                      value: false
+                patchesJson6902: |-
+                  - op: replace
+                    path: /spec/tls/{{ "{{" }} elementIndex0 {{ "}}" }}/hosts/{{ "{{" }} elementIndex1 {{ "}}" }}
+                    value: "{{ "{{" }} element {{ "}}" }}.{{ "{{" }} environment {{ "}}" }}.{{ "{{" }} solution {{ "}}" }}.{{ .Values.dnsDomain }}"
+
+
+
+
+
+
+

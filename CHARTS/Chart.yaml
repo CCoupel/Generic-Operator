@@ -1,0 +1,20 @@
+apiVersion: v2
+name: secure-namespace-operator
+description: Reference implementation of the generic Jinja2-template-driven Kubernetes operator engine (templates/core), providing automated secure namespace provisioning via the SecureNamespace CRD (templates/implementations/secure-namespace)
+type: application
+version: 1.0.3
+appVersion: "1.0.0"
+annotations:
+  artifacthub.io/license: MIT
+keywords:
+  - kubernetes
+  - operator
+  - namespace
+  - security
+  - cilium
+maintainers:
+  - name: INFRA Team 
+    email: team@example.com
+home: https://github.com/CCoupel/Generic-Operator
+sources:
+  - https://github.com/CCoupel/Generic-Operator

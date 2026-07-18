@@ -1,0 +1,41 @@
+{
+  "name": "Secure Namespace Operator",
+  "team_name": "secure-namespace-operator-team",
+  "org": "CCoupel",
+  "project": "Generic-Operator",
+  "description": "A generic, CRD-agnostic Kubernetes operator engine (Helm chart + kopf-based Python operator, templates/core/) plus a reference implementation, secure-namespace (templates/implementations/secure-namespace/), for automated security-first namespace provisioning with networking, ingress, and Kyverno policy enforcement.",
+  "version": "1.0.3",
+  "initialized_at": "2026-07-18",
+  "initialized_from": "analysis",
+  "stack": {
+    "backend": { "language": "python", "framework": "kopf" },
+    "frontend": null,
+    "mobile": null,
+    "firmware": null,
+    "plugin": null,
+    "database": null
+  },
+  "infrastructure": {
+    "cicd": "gitlab-ci",
+    "deploy": "helm-kubernetes"
+  },
+  "testing": {
+    "backend": [],
+    "frontend": [],
+    "e2e": []
+  },
+  "security": {
+    "concerns": ["multi-tenant", "rbac", "network-policy"]
+  },
+  "commands": {
+    "build": "helm package ./CHARTS --destination artifacts/",
+    "test": "helm lint ./CHARTS",
+    "lint": "helm lint ./CHARTS",
+    "audit": "",
+    "typecheck": ""
+  },
+  "agents": {
+    "idle_ttl_minutes": 15,
+    "idle_warning_interval_minutes": 5
+  }
+}

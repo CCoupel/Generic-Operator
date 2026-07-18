@@ -1,0 +1,38 @@
+# ConfigMap 3 - Ingress Common Resources
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+
+  ingress-class.yaml: |
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: IngressClass
+    metadata:
+      name: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-namespace: [{ namespace_name }]
+      annotations:
+        ingressclass.kubernetes.io/is-default-class: "false"
+    [% if spec.ingress.enabled %]
+    _action: apply
+    spec:
+      [% if spec.ingress.controller.type == 'nginx' %]
+      controller: k8s.io/ingress-nginx
+      [% elif spec.ingress.controller.type == 'haproxy' %]
+      controller: haproxy.org/ingress-controller
+      [% elif spec.ingress.controller.type == 'traefik' %]
+      controller: traefik.io/ingress-controller
+      [% endif %]
+    [% else %]
+    _action: delete
+    [% endif %]
+

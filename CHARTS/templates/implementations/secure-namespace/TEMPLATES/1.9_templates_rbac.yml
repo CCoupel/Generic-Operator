@@ -1,0 +1,124 @@
+# ConfigMap 9 - RBAC (Service Accounts)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-rbac
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  service-account-roles.yaml: |
+    [% if spec.serviceaccount.enabled and spec.serviceaccount.roles %]
+    ---
+    # Role local pour permissions namespacées
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-role
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-by: secure-namespace-operator
+    rules:
+      [{ spec.serviceaccount.roles }]
+    --- 
+    # RoleBinding local
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-binding
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-by: secure-namespace-operator
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name:  [{ namespace_name }]-[{ spec.serviceaccount.name }]-role
+    subjects:
+    - kind: ServiceAccount
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-sa
+      namespace: [{ namespace_name }]
+    [% else %]
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-role
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-binding
+      namespace: [{ namespace_name }]
+    _action: delete
+    [% endif %]
+
+    [% if spec.serviceaccount.enabled and spec.serviceaccount.roles %]
+    ---
+    # Role local pour permissions namespacées
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-role
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-by: secure-namespace-operator
+    rules:
+      [{ spec.serviceaccount.clusterroles }]
+    --- 
+    # RoleBinding local
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-binding
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-by: secure-namespace-operator
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name:  [{ namespace_name }]-[{ spec.serviceaccount.name }]-clusterrole
+    subjects:
+    - kind: ServiceAccount
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-sa
+      namespace: [{ namespace_name }]
+    [% else %]
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-role
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-binding
+      namespace: [{ namespace_name }]
+    _action: delete
+    [% endif %]
+  service-account.yaml: |
+    # ServiceAccount local dans le namespace utilisateur
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: [{ namespace_name }]-[{ spec.serviceaccount.name }]-sa
+      namespace: [{ namespace_name }]
+    [% if spec.serviceaccount.enabled %]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-by: secure-namespace-operator
+    [% else %]
+    _action: delete
+    [% endif %]

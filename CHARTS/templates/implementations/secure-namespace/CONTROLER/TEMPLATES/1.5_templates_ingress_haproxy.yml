@@ -1,0 +1,289 @@
+# ConfigMap 5 - HAProxy Ingress Controller
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-ingress-haproxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  deployment.yaml: |
+    [% if spec.ingress.enabled and spec.ingress.controller.type == 'haproxy' %]
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: [{ namespace_name }]-haproxy-ingress-controller
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        app: ingress-controller
+        ingress-type: haproxy
+    spec:
+      replicas: [{ spec.ingress.controller.replicas }]
+      selector:
+        matchLabels:
+          app: [{ namespace_name }]-ingress-controller
+      template:
+        metadata:
+          labels:
+            app: [{ namespace_name }]-ingress-controller
+        spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: [{ spec.ingress.controller.nodeSelector.label }]
+                        operator: In
+                        values:
+                          - [{ spec.ingress.controller.nodeSelector.value }]
+          serviceAccountName: [{ namespace_name }]-ingress-haproxy-sa
+          containers:
+          - name: haproxy-ingress-controller
+            image: haproxytech/kubernetes-ingress:1.10
+            args:
+            - --configmap=[{ namespace_name }]/ingress-haproxy-config
+            - --ingress-class=[{ namespace_name }]
+            - --publish-service=[{ namespace_name }]/[{ spec.ingress.serviceName }]
+            - --namespace-whitelist=[{ namespace_name }]
+            env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace  # CORRECTION : Utilise le vrai namespace du pod
+            resources:
+              requests:
+                cpu: [{ spec.ingress.controller.resources.requests.cpu }]
+                memory: [{ spec.ingress.controller.resources.requests.memory }]
+              limits:
+                cpu: [{ spec.ingress.controller.resources.limits.cpu }]
+                memory: [{ spec.ingress.controller.resources.limits.memory }]
+            ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: stat
+              containerPort: 1024
+              protocol: TCP
+            livenessProbe:
+              httpGet:
+                path: /healthz
+                port: 1042
+                scheme: HTTP
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 1
+            readinessProbe:
+              httpGet:
+                path: /healthz
+                port: 1042
+                scheme: HTTP
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 1
+            securityContext:
+              allowPrivilegeEscalation: true
+              capabilities:
+                drop:
+                - ALL
+                add:
+                - NET_BIND_SERVICE
+              runAsUser: 1000
+              runAsGroup: 1000
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ingress-haproxy-config
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+    data:
+      # Configuration HAProxy personnalisée (optionnel)
+      ssl-redirect: "false"
+      timeout-client: "50s"
+      timeout-server: "50s"
+      default-backend-service: ""
+      # Désactiver TCPRoute si non utilisé
+      disable-config-snippets: "true"
+      # Configuration des stats
+      stats-port: "1024"
+      stats-refresh-time: "10s"
+
+    [% else %]
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: [{ namespace_name }]-haproxy-ingress-controller
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ingress-haproxy-config
+      namespace: [{ namespace_name }]
+    _action: delete
+    [% endif %]
+  rbac.yaml: |
+    [% if spec.ingress.enabled and spec.ingress.controller.type == 'haproxy' %]
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-controller
+      labels:
+        app.kubernetes.io/component: rbac
+        app.kubernetes.io/name: ingress-haproxy
+    rules:
+    # Permissions pour lire les ressources globales
+    - apiGroups: [""]
+      resources: ["configmaps", "endpoints", "nodes", "pods", "secrets", "namespaces"]
+      verbs: ["list", "watch", "get"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["create", "patch"]
+    # Permissions pour les leases (leader election)
+    - apiGroups: ["coordination.k8s.io"]
+      resources: ["leases"]
+      verbs: ["list", "watch", "get", "update", "create"]
+    # Permissions pour les ingresses
+    - apiGroups: ["networking.k8s.io"]
+      resources: ["ingresses", "ingressclasses"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["networking.k8s.io"]
+      resources: ["ingresses/status"]
+      verbs: ["update"]
+    # Permissions pour les endpointslices
+    - apiGroups: ["discovery.k8s.io"]
+      resources: ["endpointslices"]
+      verbs: ["list", "watch", "get"]
+    # Permissions pour les CRDs HAProxy (optionnel)
+    - apiGroups: ["haproxy.org"]
+      resources: ["*"]
+      verbs: ["get", "list", "watch"]
+    # Permissions pour les CRDs
+    - apiGroups: ["apiextensions.k8s.io"]
+      resources: ["customresourcedefinitions"]
+      verbs: ["get", "list", "watch"]
+    ---
+    # ServiceAccount local dans le namespace utilisateur
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-sa
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        app.kubernetes.io/name: ingress-haproxy
+    ---
+    # ClusterRoleBinding pour lier le SA local au ClusterRole global
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-binding
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-namespace: [{ namespace_name }]
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: [{ namespace_name }]-ingress-haproxy-controller
+    subjects:
+    - kind: ServiceAccount
+      name: [{ namespace_name }]-ingress-haproxy-sa
+      namespace: [{ namespace_name }]
+    ---
+    # Role local pour permissions namespacées
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-role
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+    rules:
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["create", "patch"]
+    - apiGroups: ["coordination.k8s.io"]
+      resources: ["leases"]
+      verbs: ["create", "get", "update", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["create", "get", "update", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list", "watch"]
+    ---
+    # RoleBinding local
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-binding
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: [{ namespace_name }]-ingress-haproxy-role
+    subjects:
+    - kind: ServiceAccount
+      name: [{ namespace_name }]-ingress-haproxy-sa
+      namespace: [{ namespace_name }]
+    [% else %]
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-controller
+    _action: delete
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-sa
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-binding
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-role
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: [{ namespace_name }]-ingress-haproxy-binding
+      namespace: [{ namespace_name }]
+    _action: delete
+    ---
+    [% endif %]

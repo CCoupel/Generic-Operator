@@ -1,0 +1,110 @@
+#=========================================================================
+# Règle 1: Validation - solution obligatoire
+# =========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: securenamespace-validate-solution
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kyverno-policy
+  annotations:
+    policies.kyverno.io/title: "Validate SecureNamespace Solution Field"
+    policies.kyverno.io/category: "Validation"
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Vérifie que spec.project.solution est présent et non vide
+      lors de la création d'un SecureNamespace.
+      Remplace la validation du webhook mutating Flask.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: require-solution
+      match:
+        any:
+          - resources:
+              kinds:
+                - {{ .Values.crd.group }}/{{ .Values.crd.version }}/{{ .Values.crd.kind }}
+              operations:
+                - CREATE
+                - UPDATE
+      validate:
+        message: >-
+          spec.project.solution est obligatoire et ne peut pas être vide.
+          SecureNamespace: {{ "{{" }} request.object.metadata.name || request.name || 'unknown' {{ "}}" }}
+        pattern:
+          spec:
+            project:
+              solution: "?*"
+    - name: require-environment
+      match:
+        any:
+          - resources:
+              kinds:
+                - {{ .Values.crd.group }}/{{ .Values.crd.version }}/{{ .Values.crd.kind }}
+              operations:
+                - CREATE
+                - UPDATE
+      validate:
+        message: >-
+          spec.project.environment est obligatoire et ne peut pas être vide.
+          SecureNamespace: {{ "{{" }} request.object.metadata.name || request.name || 'unknown' {{ "}}" }}
+        pattern:
+          spec:
+            project:
+              environment: "?*"
+---
+# =========================================================================
+# Règle 3 (optionnelle): Validation post-mutation
+# Vérifie que le nom suit bien le format <solution>-<environment>
+# =========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: securenamespace-validate-name-format
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kyverno-policy
+  annotations:
+    policies.kyverno.io/title: "Validate SecureNamespace Name Format"
+    policies.kyverno.io/category: "Validation"
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Vérifie que metadata.name correspond exactement à 
+      <solution>-<lower(environment)>.
+      Filet de sécurité après la mutation automatique.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: name-must-match-solution-environment
+      match:
+        any:
+          - resources:
+              kinds:
+                - {{ .Values.crd.group }}/{{ .Values.crd.version }}/{{ .Values.crd.kind }}
+              operations:
+                - CREATE
+                - UPDATE
+      context:
+        - name: solution
+          variable:
+            jmesPath: "request.object.spec.project.solution"
+        - name: environment
+          variable:
+            jmesPath: "to_lower(request.object.spec.project.environment || 'dev')"
+        - name: expectedName
+          variable:
+            value: "{{ "{{" }} solution {{ "}}" }}-{{ "{{" }} environment {{ "}}" }}"
+      validate:
+        deny:
+          conditions:
+            all:
+              - key: "{{ "{{" }} request.object.metadata.name {{ "}}" }}"
+                operator: NotEquals
+                value: "{{ "{{" }} expectedName {{ "}}" }}"
+          message: >-
+            Le nom du SecureNamespace doit être '<solution>-<environment>'.
+            Nom actuel: {{ "{{" }} request.object.metadata.name {{ "}}" }}
+            Nom attendu: {{ "{{" }} expectedName {{ "}}" }}

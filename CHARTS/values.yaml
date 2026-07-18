@@ -1,0 +1,68 @@
+# Configuration du CRD piloté par le moteur générique (templates/core/).
+# Le moteur Python ne connaît plus ce domaine en dur — une nouvelle implémentation
+# (autre CRD) n'a qu'à changer ces valeurs + ajouter son propre dossier
+# templates/implementations/<nom>/, sans toucher templates/core/.
+crd:
+  group: secure-ns.example.com
+  version: v1alpha1
+  kind: SecureNamespace
+  plural: securenamespaces
+
+# Namespace où déployer l'opérateur
+namespace:
+  name: namespace-operator
+  create: true
+
+dnsDomain: infra.secure-ns.example.com
+
+# Configuration de l'opérateur
+operator:  
+  debug_level: INFO  
+  reconcile:
+    # Intervalle entre chaque réconciliation (en secondes)
+    # Toutes les N secondes, l'opérateur vérifie et corrige les dérives
+    intervalSeconds: 300    # 5 minutes par défaut
+    # Délai avant la première réconciliation après démarrage (en secondes)
+    # Permet au handler create de terminer avant le premier tick
+    initialDelaySeconds: 60  # 1 minute par défaut
+    
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+
+# Proxy configuration (optionnel)
+proxy:
+  enabled: true
+  http: "http://203.0.113.10:8080"
+  https: "http://203.0.113.10:8080"
+  noProxy: "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,localhost,172.17.0.0/16,10.23.0.0/16,.secure-ns.example.com,203.0.113.11"
+
+# Webhook configuration
+webhook:
+  replicas: 1
+  
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+  
+# Cert-manager configuration
+certManager:
+  enabled: true
+  issuer:
+    create: true
+
+# ServiceAccount
+serviceAccount:
+  create: true
+  name: secure-namespace-operator
+  annotations: {}
+

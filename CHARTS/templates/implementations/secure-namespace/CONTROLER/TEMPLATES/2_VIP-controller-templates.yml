@@ -1,0 +1,148 @@
+# 2_vip-controller-templates.yml
+# Templates for Egress Controller - Uses Jinja2 with [{ }] delimiters
+# Now with _action support for generic apply/delete like main operator
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vip-controller-templates
+  namespace: {{ .Release.Namespace }} 
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/name: vip-controller
+    app.kubernetes.io/component: templates
+    app.kubernetes.io/managed-by: secure-namespace-operator
+data:
+  cilium-egress-gateway-policy.yaml: |
+    apiVersion: cilium.io/v2
+    kind: CiliumEgressGatewayPolicy
+    metadata:
+      name: [{ egress_policy_name }]
+      labels:
+        app.kubernetes.io/name: egress-gateway
+        app.kubernetes.io/component: policy
+        app.kubernetes.io/managed-by: egress-vip-controller
+        managed-namespace: [{ namespace_name }]
+    [% if spec.egressController.enabled and node_name and egress_ip %]
+    _action: apply
+    spec:
+      destinationCIDRs:
+        - 0.0.0.0/0
+      egressGateway:
+        nodeSelector:
+          matchLabels:
+            kubernetes.io/hostname: [{ node_name }]
+        egressIP: [{ egress_ip }]
+      selectors:
+        - podSelector:
+            matchLabels:
+              io.kubernetes.pod.namespace: [{ namespace_name }]
+    [% else %]
+    _action: delete
+    [% endif %]
+  cilium-l2-announcement-policy.yaml: |
+    apiVersion: cilium.io/v2alpha1
+    kind: CiliumL2AnnouncementPolicy
+    metadata:
+      name: [{ l2_policy_name }]
+      labels:
+        app.kubernetes.io/name: l2-announcement
+        app.kubernetes.io/component: policy
+        app.kubernetes.io/managed-by: egress-vip-controller
+        managed-namespace: [{ namespace_name }]
+    [% if spec.ingress.enabled and node_name %]
+    _action: apply
+    spec:
+      nodeSelector:
+        matchLabels:
+          kubernetes.io/hostname: [{ node_name }]
+      serviceSelector:
+        matchExpressions:
+          - key: io.kubernetes.service.namespace
+            operator: In
+            values:
+              - [{ namespace_name }]
+          - key: io.kubernetes.service.name
+            operator: In
+            values:
+              - [{ spec.ingress.serviceName }]
+      loadBalancerIPs: true
+      interfaces: [ [{ spec.network.interfaceName }] ]
+    [% else %]
+    _action: delete
+    [% endif %]
+  ingress-service.yaml: |
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: [{ spec.ingress.serviceName }]
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-namespace: [{ namespace_name }]
+        [# Label pour tracker l'état du figement #]
+        [% if egress_ip %]
+        egress-vip.io/vip-frozen: "true"
+        [% else %]
+        egress-vip.io/vip-frozen: "false"
+        [% endif %]
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: "*.[{ environment }].[{ solution }].{{.Values.dnsDomain}}"
+        external-dns.alpha.kubernetes.io/ttl: "60"
+        [# ⭐ Annotation Cilium pour figer la VIP #]
+        [% if egress_ip %]
+        io.cilium/lb-ipam-ips: "[{ egress_ip }]"
+        [% endif %]
+    [% if spec.ingress.enabled or spec.egressController.enabled %]
+    _action: apply
+    spec:
+      type: LoadBalancer
+      [# ⭐ loadBalancerIP pour figer la VIP #]
+      [% if egress_ip %]
+      loadBalancerIP: "[{ egress_ip }]"
+      [% endif %]
+      ports:
+      - port: 80
+        targetPort: 80
+        name: http
+      - port: 443
+        targetPort: 443
+        name: https
+      - port: 1024
+        targetPort: 1024
+        protocol: TCP
+        name: stats
+      selector:
+        app: [{ namespace_name }]-ingress-controller
+    [% else %]
+    _action: delete
+    [% endif %]
+
+  # ⭐ v6.1.0: Mise à jour des annotations du SecureNamespace
+  #
+  # _action: apply (standard) sur la ressource SecureNamespace elle-même.
+  # Le ResourceManager SSA gère déjà les ressources cluster-scoped sans namespace.
+  # SSA avec force_conflicts=True ne touche que les champs déclarés ici,
+  # le spec et toutes les autres annotations sont préservés.
+  #
+  # current_annotations est injecté par config_loader depuis les annotations actuelles.
+  # La rotation lastVIP/lastNode est calculée ici en Jinja2 pur — zéro logique Python.
+  #
+  # Nommage des annotations: vip.{{ .Values.crd.group }}/<champ>
+  # jsonPath CRD (exemple avec la valeur par défaut) : .metadata.annotations.vip\.secure-ns\.example\.com/current-vip  (/ non échappé dans le nom, adapter si crd.group est surchargé)
+  securenamespace-status.yaml: |
+    [% if vip_changed or node_changed or not initialized %]
+    apiVersion: {{ .Values.crd.group }}/{{ .Values.crd.version }}
+    kind: SecureNamespace
+    metadata:
+      name: [{ securenamespace_name }]
+      annotations:
+        current-vip:  "[{ egress_ip  | default('') }]"
+        current-node: "[{ node_name  | default('') }]"
+        last-vip:     "[{ last_vip   | default('') }]"
+        last-node:    "[{ last_node  | default('') }]"
+        last-update:  "[{ timestamp }]"
+    _action: apply
+    _no_finalizer: true
+    [% endif %]
+

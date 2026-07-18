@@ -1,0 +1,335 @@
+# ConfigMap 2 - Network Resources
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: templates-network
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-template
+
+data:
+  network-policy.yaml: |
+    apiVersion: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: [{ namespace_name }]-isolation
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+    [% if spec.network.isolationEnabled %]
+    spec:
+      endpointSelector:
+        matchLabels: {}
+      egress:
+      # IMPORTANT : Autoriser l'accès à l'API Kubernetes
+      - toEntities:
+        - kube-apiserver
+        - host
+      # Autoriser DNS
+      - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+        toPorts:
+        - ports:
+          - port: "53"
+            protocol: UDP
+      # Autoriser traffic interne au namespace
+      - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: [{ namespace_name }]
+      ingress:
+      [% if spec.ingress.enabled %]
+      # Autoriser TOUT le trafic entrant (depuis World et interne)
+      - fromEntities:
+        - world
+        - cluster
+      [% endif %]
+      # Autoriser tout le traffic entrant depuis le service LoadBalancer
+      - fromEndpoints:
+        - {}
+    [% else %]
+    _action: delete
+    [% endif %]
+
+  network-external-access.yaml: |
+    [% if spec.network.externalAccess.enabled and (spec.network.externalAccess.rules or spec.network.externalAccess.services or spec.network.externalAccess.namespaces) %]
+    # ========== CRÉATION ==========
+    ---
+    apiVersion: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: [{ namespace_name }]-external-access
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-by: secure-namespace-operator
+    spec:
+      endpointSelector:
+        matchLabels: {}
+      
+      egress:
+      # ============================================
+      # ACCÈS AUX SERVICES KUBERNETES
+      # ============================================
+      [% if spec.network.externalAccess.services %]
+      [% for service in spec.network.externalAccess.services %]
+      
+      # Service: [{ service.namespace }]/[{ service.name }][% if service.ports %] (ports spécifiques)[% else %] (tous les ports)[% endif %]
+      - toServices:
+        - k8sService:
+            serviceName: [{ service.name }]
+            namespace: [{ service.namespace }]
+        [% if service.ports %]
+        toPorts:
+        [% for port in service.ports %]
+        - ports:
+          - port: "[{ port.port }]"
+            protocol: [{ port.protocol }]
+        [% endfor %]
+        [% endif %]
+      
+      [% endfor %]
+      [% endif %]
+      
+      # ============================================
+      # ACCÈS À DES NAMESPACES
+      # ============================================
+      [% if spec.network.externalAccess.namespaces %]
+      [% for ns in spec.network.externalAccess.namespaces %]
+      
+      [% if ns is string %]
+      # Namespace: [{ ns }] (tous les ports)
+      - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: [{ ns }]
+      
+      [% else %]
+      # Namespace: [{ ns.name }][% if ns.ports %] (ports spécifiques)[% else %] (tous les ports)[% endif %]
+      - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: [{ ns.name }]
+        [% if ns.ports %]
+        toPorts:
+        [% for port in ns.ports %]
+        - ports:
+          - port: "[{ port.port }]"
+            protocol: [{ port.protocol }]
+        [% endfor %]
+        [% endif %]
+      
+      [% endif %]
+      [% endfor %]
+      [% endif %]
+      
+      # ============================================
+      # RÈGLES D'ACCÈS EXTERNE (IP/CIDR)
+      # ============================================
+      [% for rule in spec.network.externalAccess.rules %]
+      
+      # Règle: [{ rule.name }]
+      [% if rule.description %]# [{ rule.description }][% endif %]
+      
+      [% if rule.cidrs %]
+      - toCIDR:
+        [% for cidr in rule.cidrs %]
+        - [{ cidr }]
+        [% endfor %]
+        [% if rule.ports %]
+        toPorts:
+        [% for port in rule.ports %]
+        - ports:
+          - port: "[{ port.port }]"
+            protocol: [{ port.protocol }]
+        [% endfor %]
+        [% endif %]
+      [% endif %]
+      
+      [% if rule.fqdns %]
+      - toFQDNs:
+        [% for fqdn in rule.fqdns %]
+        - matchPattern: "[{ fqdn }]"
+        [% endfor %]
+        [% if rule.ports %]
+        toPorts:
+        [% for port in rule.ports %]
+        - ports:
+          - port: "[{ port.port }]"
+            protocol: [{ port.protocol }]
+        [% endfor %]
+        [% endif %]
+      [% endif %]
+      
+      [% endfor %]
+    
+    [% else %]
+    # ========== SUPPRESSION ==========
+    ---
+    apiVersion: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: [{ namespace_name }]-external-access
+      namespace: [{ namespace_name }]
+    _action: delete
+    [% endif %]
+
+  network-infrastructure-access.yaml: >
+    [#
+    ==========================================================================
+    #]
+    [# Définition de TOUS les services d'infrastructure en un seul endroit      
+    #]
+    [#
+    ==========================================================================
+    #]
+
+    [% set infrastructure_services = {
+      'vault': {
+        'description': 'HashiCorp Vault - Gestion des secrets',
+        'cidrs': ['203.0.113.37/32'],
+        'fqdns': ['vault.secure-ns.example.com'],
+        'ports': [
+          {'port': 443, 'protocol': 'TCP'},
+          {'port': 8200, 'protocol': 'TCP'},
+          {'port': 8201, 'protocol': 'TCP'}
+        ]
+      },
+      'proxy': {
+        'description': 'Proxy HTTP/HTTPS d\'entreprise',
+        'cidrs': ['203.0.113.10/32'],
+        'fqdns': ['proxy.secure-ns.example.com'],
+        'ports': [
+          {'port': 8080, 'protocol': 'TCP'},
+          {'port': 3128, 'protocol': 'TCP'}
+        ]
+      },
+      'smtp': {
+        'description': 'Serveur SMTP pour envoi d\'emails',
+        'cidrs': ['203.0.113.135/32'],
+        'fqdns': ['cas.secure-ns.example.com.'],
+        'ports': [
+          {'port': 25, 'protocol': 'TCP'},
+          {'port': 587, 'protocol': 'TCP'},
+          {'port': 465, 'protocol': 'TCP'}
+        ]
+      },
+      'logging': {
+        'description': 'Services de logging (Elasticsearch, Loki)',
+        'cidrs': ['203.0.113.72/32'],
+        'fqdns': ['infra-loginsight.secure-ns.example.com'],
+        'ports': [
+          {'port': 514, 'protocol': 'UDP'},
+          {'port': 9200, 'protocol': 'TCP'},
+          {'port': 5601, 'protocol': 'TCP'},
+          {'port': 3100, 'protocol': 'TCP'}
+        ]
+      },
+      'git': {
+        'description': 'Serveur Git/GitLab interne',
+        'cidrs': ['203.0.113.16/32'],
+        'fqdns': ['gitlab.secure-ns.example.com'],
+        'ports': [
+          {'port': 443, 'protocol': 'TCP'},
+          {'port': 22, 'protocol': 'TCP'}
+        ]
+      },
+      's3': {
+        'description': 'Stockage objet S3/Scality',
+        'cidrs': ['203.0.113.17/32', '203.0.113.20/32'],
+        'fqdns': ['s3ipsg.secure-ns.example.com', 's3igci.secure-ns.example.com'],
+        'ports': [
+          {'port': 443, 'protocol': 'TCP'},
+          {'port': 9000, 'protocol': 'TCP'},
+          {'port': 9001, 'protocol': 'TCP'}
+        ]
+      }
+    } %]
+
+
+    [#
+    ==========================================================================
+    #]
+
+    [# LOGIQUE DE GÉNÉRATION                                                    
+    #]
+
+    [#
+    ==========================================================================
+    #]
+
+
+    [% set standard_config = spec.network.externalAccess.get('standard', {}) %]
+
+    [% if spec.network.externalAccess.enabled %]
+
+    [# ========== CRÉATION - Accès aux services d'infrastructure ========== #]
+
+    ---
+
+    apiVersion: cilium.io/v2
+
+    kind: CiliumNetworkPolicy
+
+    metadata:
+      name: [{ namespace_name }]-infrastructure-access
+      namespace: [{ namespace_name }]
+      labels:
+        {{ .Values.crd.group }}/solution: [{ solution }]
+        {{ .Values.crd.group }}/environment: [{ environment }]
+        managed-by: secure-namespace-operator
+        access-type: infrastructure
+    spec:
+      endpointSelector:
+        matchLabels: {}
+      
+      egress:
+      [# Boucle sur les services activés dans le CRD #]
+      [% for service_name, enabled in standard_config.items() %]
+      [% if enabled and service_name in infrastructure_services %]
+      [% set service = infrastructure_services[service_name] %]
+      
+      # ============================================
+      # Service: [{ service_name | upper }]
+      # [{ service.description }]
+      # ============================================
+      
+      [% if service.cidrs %]
+      # Accès par CIDR
+      - toCIDR:
+        [% for cidr in service.cidrs %]
+        - [{ cidr }]
+        [% endfor %]
+        [% if service.ports %]
+        toPorts:
+        [% for port in service.ports %]
+        - ports:
+          - port: "[{ port.port }]"
+            protocol: [{ port.protocol }]
+        [% endfor %]
+        [% endif %]
+      [% endif %]
+      
+      
+      
+      [% endif %]
+      [% endfor %]
+
+    [% else %]
+
+    [# ========== SUPPRESSION - Aucun service activé ========== #]
+
+    ---
+
+    apiVersion: cilium.io/v2
+
+    kind: CiliumNetworkPolicy
+
+    metadata:
+      name: [{ namespace_name }]-infrastructure-access
+      namespace: [{ namespace_name }]
+    _action: delete
+
+    [% endif %]

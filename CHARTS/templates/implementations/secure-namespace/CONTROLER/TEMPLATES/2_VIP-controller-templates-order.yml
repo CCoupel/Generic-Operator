@@ -1,0 +1,41 @@
+# 2_vip-controller-templates.yml
+# Templates for Egress Controller - Uses Jinja2 with [{ }] delimiters
+# Now with _action support for generic apply/delete like main operator
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vip-controller-templates-order
+  namespace: {{ .Release.Namespace }} 
+  labels:
+    {{- include "secure-namespace-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/name: vip-controller
+    app.kubernetes.io/component: templates
+    app.kubernetes.io/managed-by: secure-namespace-operator
+data:
+  templates-order.yaml: |
+    # Templates utilisés à la demande (pas dans la réconciliation)
+    jobs:
+      - vip-controller-templates-jobs/job-del-ip.yaml
+      - vip-controller-templates-jobs/job-add-ip.yaml
+      - vip-controller-templates-jobs/job-delete-shutdown.yaml
+
+    templates:
+      - vip-controller-templates/ingress-service.yaml
+      - vip-controller-templates/cilium-egress-gateway-policy.yaml
+      - vip-controller-templates/cilium-l2-announcement-policy.yaml
+      - vip-controller-templates/securenamespace-status.yaml
+
+      # Ingress Resources
+      - templates-ingress/ingress-class.yaml
+      
+      # Ingress Controllers - NGINX
+      - templates-ingress-nginx/rbac.yaml
+      - templates-ingress-nginx/deployment.yaml
+      
+      # Ingress Controllers - HAProxy
+      - templates-ingress-haproxy/rbac.yaml
+      - templates-ingress-haproxy/deployment.yaml
+      
+      # Ingress Controllers - Traefik
+      - templates-ingress-traefik/rbac.yaml
+      - templates-ingress-traefik/deployment.yaml
