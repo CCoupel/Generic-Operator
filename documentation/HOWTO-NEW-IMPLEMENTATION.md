@@ -204,16 +204,21 @@ see the comment block at the top of either file.
 ### Step 7 — A dedicated sub-controller (optional)
 
 Only needed if part of your reconciliation can't be a one-shot template render — e.g. something that
-watches cluster state continuously per-CR-instance. Reference: `core/CODE/2_VIP-controller.yml` (the VIP
-egress controller — a self-contained Python app in its own ConfigMap, spawned as a Deployment by a Jinja2
-template under `implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`, with its
-own `CRD_GROUP` env var read independently since it doesn't share `core/`'s `config.py`).
+watches state continuously for a single CR instance rather than reacting to CRD-wide events. Reference:
+`core/CODE/2_VIP-controller.yml` (the VIP egress controller — a self-contained Python app in its own
+ConfigMap, spawned as a Deployment by a Jinja2 template under
+`implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`, with its own `CRD_GROUP`
+env var read independently since it doesn't share `core/`'s `config.py`).
 
-This sub-controller lives in `core/` because its *mechanism* (load templates order → load templates →
-Jinja2 render → apply/delete) is the same generic pipeline as the operator, not because its *content* is
-CRD-agnostic — `controller.py`/`node_finder.py` are full of VIP/Cilium-specific reconciliation logic.
-If you build your own sub-controller, either adapt that business logic for your own use case or skip
-spawning one entirely — it's optional, unlike the operator itself.
+This is the engine's **second generic pattern**, at a different scope than the operator: the operator
+watches the CRD as a whole (every instance, cluster-wide); a controller runs the exact same generic
+engine (load templates order → load templates → Jinja2 render → apply/delete) but dedicated to a single
+CRD instance, watched continuously by its own process. The mechanism is just as CRD-agnostic as the
+operator's — what's implementation-specific is *what a given controller watches beyond that one
+instance*: this one's `controller.py`/`node_finder.py` track a Service's LoadBalancer VIP and drive
+Cilium policies, which is `secure-namespace`'s choice, not a constraint of the pattern. If you build your
+own sub-controller, adapt that watch/business logic for your own use case, or skip spawning one entirely
+— it's optional, unlike the operator itself.
 
 ### Step 8 — Validate
 

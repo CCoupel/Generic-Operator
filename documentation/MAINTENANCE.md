@@ -167,10 +167,15 @@ this implementation's `solution`/`environment` spec shape.
 (via `implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`), not sharing the
 operator's `core/CODE/3_operator.yml` ConfigMap — it reads its own `CRD_GROUP` etc. from its own env vars
 via a separate `config.py`-less mechanism, and has its own class-based `ResourceManager`/`TemplateManager`
-(same generic render/apply pipeline as the operator, parallel implementation — see the [Component
-Details](#component-details) note below). It lives in `core/` because that pipeline is generic, even
-though its own `controller.py`/`node_finder.py` reconciliation logic is VIP/Cilium-specific, not
-CRD-agnostic.
+(same generic render/apply pipeline as the operator, parallel implementation).
+
+This is the engine's second generic pattern, at a different scope than the operator: the operator
+watches the CRD as a whole (every instance, cluster-wide); a controller runs the exact same generic
+engine but dedicated to a single CRD instance, watched continuously by its own process — which is why it
+lives in `core/`. The mechanism is just as CRD-agnostic as the operator's; what's implementation-specific
+is what a given controller watches *beyond* that one instance — here, `controller.py`/`node_finder.py`
+track a Service's LoadBalancer VIP and drive Cilium policies, which is `secure-namespace`'s choice, not a
+constraint of the pattern.
 
 **Purpose**: Manages egress gateway VIP placement and L2 announcement
 
@@ -1408,9 +1413,9 @@ CHARTS/
     │       ├── 3_operator.yml                   # config/crd_manager/handlers/operator/
     │       │                                     # resource_manager/revision_manager/
     │       │                                     # template_manager/utils.py (embedded)
-    │       └── 2_VIP-controller.yml              # per-CR sub-controller, own ConfigMap — same
-    │                                             # render/apply pipeline as the operator, but its
-    │                                             # own controller.py/node_finder.py are VIP-specific
+    │       └── 2_VIP-controller.yml              # per-instance controller, own ConfigMap — same
+    │                                             # generic engine as the operator, scoped to one
+    │                                             # CRD instance instead of cluster-wide
     └── implementations/
         └── secure-namespace/                    # this implementation (declarative only)
             ├── CRD/0_CRD.yml

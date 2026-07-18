@@ -56,14 +56,18 @@ Le dépôt sépare le **moteur générique** (toi) de **l'implémentation d'exem
 
 **VIP Controller** — `CHARTS/templates/core/CODE/2_VIP-controller.yml` (6 modules : `config_loader.py`,
 `controller.py`, `job_manager.py`, `node_finder.py`, `resource_manager.py`, `template_manager.py`).
-Sous-contrôleur spawné par l'opérateur, une instance par `SecureNamespace`. Il vit dans `core/` parce que
-son *mécanisme* (load templates order → load templates → rendu Jinja2 → apply/delete) est le même
-pipeline générique que l'opérateur (ses propres `ResourceManager`/`TemplateManager`, en classes —
-implémentation parallèle, pas partagée avec celle de l'opérateur en fonctions). Mais `controller.py` et
-`node_finder.py` contiennent de la logique métier VIP/Cilium **spécifique**, pas agnostique du CRD — ne
-pas présenter ce module comme réutilisable tel quel pour une autre implémentation. Il lit ses propres
-`CRD_GROUP`/etc. indépendamment via `os.getenv` (pas de `config.py` partagé avec l'opérateur — ConfigMap
-séparée, deux fichiers `.py: |` distincts).
+C'est le **second pattern générique** du moteur, à une échelle différente de l'opérateur : l'opérateur
+surveille le CRD dans son ensemble (toutes les instances, cluster-wide) ; un contrôleur applique
+exactement le même moteur générique (load templates order → load templates → rendu Jinja2 →
+apply/delete — ses propres `ResourceManager`/`TemplateManager`, en classes, implémentation parallèle à
+celle de l'opérateur en fonctions) mais dédié à **une seule instance** de ce CRD, surveillée en continu
+par son propre processus — c'est pour ça qu'il vit dans `core/`, pas sous `implementations/`. Le
+mécanisme est tout aussi agnostique du CRD que celui de l'opérateur ; ce qui est spécifique à cette
+implémentation, c'est ce que ce contrôleur surveille **en plus** de son instance : `controller.py` et
+`node_finder.py` traquent ici la VIP LoadBalancer d'un Service et pilotent des policies Cilium — c'est le
+choix de `secure-namespace`, pas une contrainte du pattern. Il lit ses propres `CRD_GROUP`/etc.
+indépendamment via `os.getenv` (pas de `config.py` partagé avec l'opérateur — ConfigMap séparée, deux
+fichiers `.py: |` distincts).
 
 ## Stack & Conventions
 

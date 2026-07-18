@@ -124,16 +124,22 @@ None of them reference `SecureNamespace` — the CRD identity comes entirely fro
 
 ### VIP Controller (`templates/core/CODE/2_VIP-controller.yml`)
 
-A second, per-CR sub-controller, spawned by the operator as its own Deployment (one instance per
-`SecureNamespace`, via `implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`).
-It runs the **same render/apply pipeline** as the operator (`load_templates_order()` →
-`load_templates()` → Jinja2 render → apply/delete resources — its own class-based
-`ResourceManager`/`TemplateManager`, parallel implementations of the same pattern as the operator's
-function-based ones) — which is why it lives in `core/` alongside the operator rather than under
-`implementations/`. Unlike the operator's own modules, though, its `controller.py` (the watch loop) and
-`node_finder.py` (node selection) contain VIP/Cilium-specific reconciliation logic that **is not**
-CRD-agnostic — a different implementation reusing this engine either adapts this controller's business
-logic too, or doesn't spawn a sub-controller at all (it's optional, not part of the minimal contract).
+The engine offers a **second generic pattern**, at a different scope than the operator. The operator
+watches the CRD as a whole — every instance, cluster-wide. A controller runs the exact same generic
+engine (`load_templates_order()` → `load_templates()` → Jinja2 render → apply/delete resources — its
+own class-based `ResourceManager`/`TemplateManager`, parallel implementations of the operator's
+function-based ones) but dedicated to a **single CRD instance**, spawned by the operator as its own
+Deployment (one controller instance per `SecureNamespace`, via
+`implementations/secure-namespace/TEMPLATES/1.7_templates_vip_controller.yml`). That's why it lives in
+`core/` alongside the operator rather than under `implementations/` — the mechanism itself (watch,
+render, apply, all template-driven) is just as CRD-agnostic as the operator's.
+
+What's implementation-specific is *what a given controller additionally watches beyond its one CRD
+instance*: this reference implementation's `controller.py` (watch loop) and `node_finder.py` (node
+selection) track a Service's LoadBalancer VIP and drive Cilium egress/L2 policies — that choice of
+target and the business logic around it belong to `secure-namespace`, not to the engine. A different
+implementation reusing this engine either adapts that watch/business logic for its own use case, or
+skips spawning a controller entirely — it's optional, unlike the operator.
 
 ## Building Your Own Implementation
 
